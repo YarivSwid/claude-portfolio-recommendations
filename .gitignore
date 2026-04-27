@@ -1,0 +1,32 @@
+# Private data — never commit
+.env
+portfolio/
+.cache/
+
+# User profile (each user fills in locally — example template ships in repo)
+research/user-views.md
+
+# Per-run research outputs (your signal history, theses, daily reports)
+research/logs/
+research/daily/
+research/signals/
+research/theses/
+research/regime/
+research/news/
+
+# Broker exports (your actual holdings + transaction history)
+ActivePortfolio.csv.xlsx
+ActivePortfolio.csv.xls
+AllStockTransactions.csv.xlsx
+AllStockTransactions.csv.xls
+
+# Local Claude Code settings (per-user permissions)
+.claude/settings.local.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# OS
+.DS_Store

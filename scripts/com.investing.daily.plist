@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!--
+  Example launchd plist for daily automation. To use:
+   1. Copy this file to ~/Library/LaunchAgents/com.investing.daily.plist
+   2. Replace REPLACE_WITH_PROJECT_PATH with the absolute path of your clone
+      (e.g. /Users/you/code/claude-portfolio-recommendations)
+   3. Replace REPLACE_WITH_HOME with your $HOME (e.g. /Users/you)
+   4. Adjust Hour/Minute below to your desired local run time
+      (note: launchd's StartCalendarInterval is in LOCAL time, not UTC)
+   5. Run: launchctl load ~/Library/LaunchAgents/com.investing.daily.plist
+-->
+<dict>
+  <key>Label</key>
+  <string>com.investing.daily</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>REPLACE_WITH_PROJECT_PATH/scripts/daily_run.sh</string>
+  </array>
+
+  <!-- Adjust to your preferred local time -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>9</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>REPLACE_WITH_PROJECT_PATH/research/logs/launchd_stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>REPLACE_WITH_PROJECT_PATH/research/logs/launchd_stderr.log</string>
+
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+    <key>HOME</key>
+    <string>REPLACE_WITH_HOME</string>
+  </dict>
+</dict>
+</plist>
