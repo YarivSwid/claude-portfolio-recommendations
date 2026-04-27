@@ -48,11 +48,13 @@ Assessment factors (weigh qualitatively, not as points):
 
 ## Input
 ```bash
-# Full pipeline (Phase 1 screening + Phase 2 deep analysis via bull/bear/manager):
+# DEFAULT — Phase 1 only (cheap, ~$2-4 on Sonnet, ~5 min):
 echo '{"cash_ils": 120000, "date": "2026-04-21"}' | python3 .claude/skills/opportunity-scanner/scripts/scan.py
 
-# Phase 1 only (fast, ~5 min — screening lists without deep analysis):
-echo '{"cash_ils": 120000, "date": "2026-04-21", "phase1_only": true}' | python3 .claude/skills/opportunity-scanner/scripts/scan.py
+# Full pipeline (Phase 1 + Phase 2 deep dive — ~$30-50 on Sonnet, ~25 min):
+# Use only when you have real cash to deploy and want bull/risk/manager debate per name.
+# For routine deep-dives on 1-3 specific tickers, ask Claude in chat instead — it's cheaper.
+echo '{"cash_ils": 120000, "date": "2026-04-21", "phase1_only": false}' | python3 .claude/skills/opportunity-scanner/scripts/scan.py
 ```
 
 ## Deduplication

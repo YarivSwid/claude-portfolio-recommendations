@@ -2,13 +2,22 @@
 """opportunity-scanner — Phase 1: fast screener lists. Phase 2: 3-agent deep analysis.
 
 Phase 1: generates 3 ranked candidate lists (portfolio-fit / profile-fit / market-picks)
-         using a fast screener prompt with WebSearch. ~5 min.
+         using a fast screener prompt with WebSearch. ~5 min, ~$2-4 on Sonnet.
 Phase 2: runs the full bull-officer + risk-officer + portfolio-manager pipeline on each
-         unique ticker across all 3 lists. Batches of 3 concurrent tickers. ~15-25 min.
-         Skips tickers already in research/signals/<TICKER>_<date>.json.
+         unique ticker across all 3 lists. Batches of 3 concurrent tickers. ~15-25 min,
+         ~$30-50 on Sonnet (~$150-200 on Opus). Skips tickers already cached in
+         research/signals/<TICKER>_<date>.json.
+
+DEFAULT: Phase 1 only. Phase 2 is opt-in via phase1_only=false because deep-diving
+all 25 candidates per scan is overkill when you typically deploy on 1-3 names. Use
+the per-ticker bull/risk/manager pipeline directly (via /should-I-buy or chat) for
+the deep-dive on the names you actually consider.
 
 Input (stdin JSON):
-  { "cash_ils": 120000, "date": "2026-04-22", "phase1_only": false }
+  Cheap default (Phase 1 only):
+    { "cash_ils": 120000, "date": "2026-04-22" }
+  Full deep-dive (only when you have real cash to deploy):
+    { "cash_ils": 120000, "date": "2026-04-22", "phase1_only": false }
 
 Output: writes research/daily/<date>/opportunities.json, returns it on stdout.
 """
@@ -462,12 +471,20 @@ def main() -> None:
 
     cash_ils    = int(params.get("cash_ils", 120000))
     today       = params.get("date", dt.date.today().isoformat())
-    phase1_only = bool(params.get("phase1_only", False))  # default: run full pipeline (Phase 1 + 2)
+    # Default flipped 2026-04-27: Phase 1 only is the cheap default. Pass
+    # phase1_only=false explicitly when you want the full bull/risk/manager
+    # deep-dive on every candidate (~10x more expensive — only worth it when
+    # you have real cash to deploy and want structured debate per name).
+    phase1_only = bool(params.get("phase1_only", True))
     positions   = _load_positions()
 
+    import sys as _sys
     if not phase1_only:
-        import sys as _sys
-        print("Running FULL pipeline (Phase 1 + Phase 2 deep analysis)...", file=_sys.stderr)
+        print("Running FULL pipeline (Phase 1 + Phase 2 deep analysis) — expensive. "
+              "For routine scans, omit phase1_only or set it to true.", file=_sys.stderr)
+    else:
+        print("Running Phase 1 only (cheap candidate-list mode). "
+              "Pass phase1_only=false for the full bull/risk/manager deep-dive.", file=_sys.stderr)
 
     out_dir      = ROOT / "research" / "daily" / today
     out_dir.mkdir(parents=True, exist_ok=True)

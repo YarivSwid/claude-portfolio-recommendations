@@ -37,11 +37,21 @@ Steps to follow IN ORDER:
 
 3. Run WebSearch for: 'stock market news today $TODAY major movers earnings' to get today's market context.
 
-4. For EACH held US ticker (from positions.json, skip IL* symbols and mutual funds):
+4. Per-holding deep-dive — TRIGGERED ONLY, NOT BLANKET (cost control 2026-04-27).
+   Running bull/risk/manager on every US holding every day costs ~$30-45/run and gives near-zero
+   marginal value on names with no fresh signal. Instead, deep-dive only the holdings that meet
+   AT LEAST ONE of these triggers:
+     a) Earnings within the next 7 days (from earnings-calendar output)
+     b) Price moved >5% in either direction since the previous snapshot
+     c) New 52-week high or 52-week low touched
+     d) The holding appeared in today's opportunity-scanner list with a BUY or STRONG_BUY signal
+        (means the candidate-list LLM flagged it as actionable — worth a deeper look)
+   For triggered tickers ONLY:
    - Run bull-officer and risk-officer IN PARALLEL
    - Then run portfolio-manager to synthesize
-   - Collect the signal (BUY / STRONG BUY / ADD / HOLD / WATCH / TRIM / SELL) and confidence
-   - Store each agent's output separately so it can be attributed in the report
+   - Collect the signal and confidence
+   For all OTHER holdings, write a one-line status row in the report from existing skill data
+   (price, weight, vs-200DMA, last cached signal if any) without re-running the agents.
 
 5. Run the opportunity-scanner skill to generate all 3 opportunity lists:
    echo '{"cash_ils": 120000, "date": "$TODAY"}' | python3 .claude/skills/opportunity-scanner/scripts/scan.py
