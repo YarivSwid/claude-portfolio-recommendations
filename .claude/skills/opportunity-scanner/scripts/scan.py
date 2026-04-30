@@ -355,6 +355,99 @@ def _is_valid(items: list) -> bool:
     )
 
 
+# ---------------------------------------------------------------- momentum-check
+# Post-process every Phase-1 list with deterministic yfinance metrics.
+# Overwrites the LLM's WebSearch-guessed rally_pct_30d and price_vs_200dma with
+# computed values, attaches a momentum_check object, and downgrades BUY → WATCH
+# when streak_flag == "extended".
+def _run_momentum_check(tickers: list[str]) -> dict:
+    if not tickers:
+        return {}
+    try:
+        proc = subprocess.run(
+            ["python3", str(ROOT / ".claude" / "skills" / "momentum-check" / "scripts" / "momentum.py")],
+            input=json.dumps({"tickers": tickers}),
+            capture_output=True, text=True, timeout=60, cwd=str(ROOT),
+        )
+        if proc.returncode != 0:
+            return {}
+        data = json.loads(proc.stdout)
+        return data.get("results", {})
+    except Exception:
+        return {}
+
+
+def _format_pct(p: float | None) -> str:
+    if p is None:
+        return "n/a"
+    sign = "+" if p >= 0 else ""
+    return f"{sign}{p * 100:.1f}%"
+
+
+def _yf_symbol_for(ticker: str) -> str:
+    """Convert a list-item ticker to the symbol momentum-check expects.
+    Most are passthrough (NVDA stays NVDA). TASE names already have .TA suffix."""
+    return ticker
+
+
+def _apply_momentum_check_to_list(items: list[dict]) -> list[dict]:
+    """Enrich each list item with deterministic momentum metrics. Downgrade
+    BUY/STRONG_BUY → WATCH when streak_flag == 'extended'."""
+    tickers = [_yf_symbol_for(i["ticker"]) for i in items
+               if i.get("ticker") and i["ticker"] not in ("ERROR", "TIMEOUT", "PARSE_ERROR")]
+    metrics = _run_momentum_check(tickers)
+
+    out = []
+    for item in items:
+        item = dict(item)
+        t = item.get("ticker", "")
+        m = metrics.get(_yf_symbol_for(t))
+        if not m or "error" in (m or {}):
+            item["momentum_check"] = {"status": "unavailable"}
+            out.append(item)
+            continue
+
+        item["rally_pct_30d"] = (
+            f"{_format_pct(m.get('pct_change_30d'))} (computed from yfinance close on {m.get('as_of')})"
+        )
+        pct_200 = m.get("pct_vs_200dma")
+        if pct_200 is not None:
+            direction = "above" if pct_200 >= 0 else "below"
+            item["price_vs_200dma"] = (
+                f"{_format_pct(pct_200)} {direction} 200DMA (last close {m.get('last_close')})"
+            )
+        else:
+            item["price_vs_200dma"] = "n/a (insufficient history)"
+
+        item["momentum_check"] = {
+            "status": "ok",
+            "as_of": m.get("as_of"),
+            "consecutive_up_days": m.get("consecutive_up_days"),
+            "rsi_14": m.get("rsi_14"),
+            "pct_change_30d": m.get("pct_change_30d"),
+            "pct_vs_200dma": m.get("pct_vs_200dma"),
+            "dist_from_52w_high_pct": m.get("dist_from_52w_high_pct"),
+            "streak_flag": m.get("streak_flag"),
+            "flags": m.get("flags", []),
+        }
+
+        # Downgrade extended names from BUY/STRONG_BUY to WATCH so the user is
+        # never told to chase a momentum-extended name.
+        if m.get("streak_flag") == "extended" and item.get("signal") in ("BUY", "STRONG_BUY"):
+            original = item.get("signal")
+            item["signal"] = "WATCH"
+            flags_str = ",".join(m.get("flags", [])) or "extended"
+            item["when_to_buy"] = (
+                f"WAIT — momentum extended ({flags_str}). "
+                f"Original LLM signal: {original}. Wait for cooling: pullback to 50DMA, "
+                f"RSI < 65, or 3+ consecutive down days."
+            )
+            item["_momentum_downgraded"] = True
+
+        out.append(item)
+    return out
+
+
 def _run_deep_analysis_for_ticker(
     ticker: str,
     today: str,
@@ -544,6 +637,14 @@ def main() -> None:
         output["list3_market_picks"] = _run_claude_json(
             build_list3_prompt(today, cash_ils, exclude_tickers=seen_tickers), "list3_market_picks")
         out_path.write_text(json.dumps(output, ensure_ascii=False, indent=2))
+
+    # Apply momentum-check: overwrite LLM-guessed rally_pct_30d / price_vs_200dma
+    # with deterministic yfinance metrics, and downgrade extended-momentum names
+    # from BUY → WATCH so we don't recommend chasing 18-day-up-streak rallies.
+    for key in ("list1_portfolio_fit", "list2_profile_fit", "list3_market_picks"):
+        if _is_valid(output[key]):
+            output[key] = _apply_momentum_check_to_list(output[key])
+    out_path.write_text(json.dumps(output, ensure_ascii=False, indent=2))
 
     # Post-Phase-1 validation: flag duplicates + overlapping ETFs
     _all_tickers_seen: dict[str, str] = {}

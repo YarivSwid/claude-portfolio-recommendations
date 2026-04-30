@@ -83,6 +83,7 @@ Run all skills via `echo '<JSON>' | python3 .claude/skills/<name>/scripts/<scrip
 | `charts/png` | `chart.py` | Static PNG allocation donut (inline in Claude Code chat) |
 | `opportunity-scanner` | `scan.py` | Three ranked opportunity lists (portfolio-fit, profile-fit, market) via the three-agent pipeline |
 | `portfolio-update` | `update.py` | Records a buy/sell/trim trade and updates positions.json + snapshot + xlsx atomically |
+| `momentum-check` | `momentum.py` | Per-ticker momentum metrics from yfinance cache: consecutive up-day streak, % change 5/10/30/90d, dist from 50DMA/200DMA/52w-high, RSI(14), `streak_flag` (normal/extended). No LLM. |
 
 **Dashboard usage:**
 ```bash
@@ -101,6 +102,7 @@ Always run dashboard with `run_in_background=true` — it blocks until killed.
 | `enforce_risk_officer.py` | Stop | Blocks BUY/SELL/HOLD without bull+risk+portfolio-manager this turn; also blocks if no WebFetch/WebSearch was called |
 | `enforce_signal_consistency.py` | Stop | Blocks cross-section ticker errors; requires raw data block before broad-review prose |
 | `enforce_signal_reversal.py` | Stop | Blocks silent reversal of a signal from the last 14 days without an explicit SIGNAL CHANGE acknowledgement |
+| `enforce_momentum_guardrail.py` | Stop | Calls `momentum-check` on every BUY/ADD ticker; warns (or blocks, env-flag) on extended-rally names — RSI≥75, >30% above 200DMA, or 7+ up days. Override with `MOMENTUM OVERRIDE: <reason>` line. |
 | `persist_signals.py` | Stop | After blocking hooks pass, writes `research/signals/<TICKER>_<date>.json` so future turns can detect reversals |
 | `deny_dangerous_bash.py` | PreToolUse:Bash | Blocks `rm -rf`, git push, broker-domain POST/PUT/DELETE |
 | `warn_portfolio_write.py` | PreToolUse:Write/Edit | Warns before mutating `portfolio/` outside portfolio-parse |
