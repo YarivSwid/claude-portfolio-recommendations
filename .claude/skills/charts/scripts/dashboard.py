@@ -889,13 +889,7 @@ def _html_shell(initial_symbol: str, port: int, initial_positions: list[dict]) -
     # Prepare initial portfolio rows as JSON for JS
     pos_js = json.dumps(_safe_json(initial_positions), ensure_ascii=False)
 
-    # Latest report as HTML
-    report_md   = _latest_report_md()
-    report_html = _md_to_html(report_md) if report_md else "<p style='color:#888'>No report found. Run the daily report first.</p>"
-    report_date = ""
-    if report_md:
-        m = re.search(r"# Daily Report — (\S+)", report_md)
-        report_date = m.group(1) if m else ""
+    report_date = ""  # report is now loaded dynamically via /report endpoint
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -1381,11 +1375,11 @@ table.holdings tr:hover td {{ background:#161920; }}
   <div style="max-width:900px;margin:0 auto;">
     <div style="display:flex;align-items:center;gap:16px;margin-bottom:20px;">
       <h2 style="font-size:1.2rem;">Daily Report</h2>
-      <span class="report-meta">{report_date}</span>
-      <button class="secondary" onclick="location.reload()" style="margin-left:auto;font-size:0.82rem;padding:6px 14px;">🔄 Refresh</button>
+      <span class="report-meta" id="report-date-label">{report_date}</span>
+      <button class="secondary" onclick="loadReport()" style="margin-left:auto;font-size:0.82rem;padding:6px 14px;">🔄 Refresh</button>
     </div>
-    <div class="report-wrap">
-      {report_html}
+    <div class="report-wrap" id="report-content">
+      <p style="color:#888">Loading report…</p>
     </div>
   </div>
 </div>
@@ -1402,6 +1396,21 @@ function switchTab(name) {{
   document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
   document.getElementById('tab-' + name).classList.add('active');
   if (name === 'opps') loadOpportunities();
+  if (name === 'report') loadReport();
+}}
+
+// ================================================================ REPORT (live reload)
+async function loadReport() {{
+  const el   = document.getElementById('report-content');
+  const meta = document.getElementById('report-date-label');
+  el.innerHTML = "<p style='color:#888'>Loading…</p>";
+  try {{
+    const r = await fetch(SERVER + '/report');
+    const d = await r.json();
+    if (d.error) {{ el.innerHTML = `<p style='color:#f88'>${{d.error}}</p>`; return; }}
+    el.innerHTML = d.html;
+    if (meta && d.date) meta.textContent = d.date;
+  }} catch(e) {{ el.innerHTML = "<p style='color:#f88'>Failed to load report.</p>"; }}
 }}
 
 // ================================================================ TAB 1: CHARTS
@@ -2140,6 +2149,20 @@ class _Handler(BaseHTTPRequestHandler):
                     self._send_json(json.loads(opp_path.read_text()))
                 else:
                     self._send_json({"error": "No opportunities data yet. Click Run New Scan."})
+            except Exception as e:
+                self._send_json({"error": str(e)}, 500)
+            return
+
+        if parsed.path == "/report":
+            try:
+                md = _latest_report_md()
+                if md:
+                    html = _md_to_html(md)
+                    m = re.search(r"# Daily Report — (\S+)", md)
+                    date = m.group(1) if m else ""
+                    self._send_json({"html": html, "date": date})
+                else:
+                    self._send_json({"error": "No report found. Run the daily report first."})
             except Exception as e:
                 self._send_json({"error": str(e)}, 500)
             return
