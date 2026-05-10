@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ClaudeLearning — Architecture Overview</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, -apple-system, sans-serif; background: #f8f9fa; }
+  header { background: #1a1a2e; color: white; padding: 20px 32px; }
+  header h1 { font-size: 18px; font-weight: 700; }
+  header p { font-size: 12px; color: #aaa; margin-top: 4px; }
+  main { max-width: 900px; margin: 0 auto; padding: 24px 20px 40px; }
+  svg { width: 100%; height: auto; display: block; }
+  footer { text-align: center; padding: 20px; font-size: 11px; color: #aaa; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ClaudeLearning — Investing Workbench Architecture</h1>
+  <p>Personal portfolio analysis with Claude agents + guardrails</p>
+</header>
+<main>
+<svg viewBox="0 0 760 820" xmlns="http://www.w3.org/2000/svg" font-family="system-ui, -apple-system, sans-serif">
+  <rect width="760" height="820" fill="#f8f9fa" rx="12"/>
+  <text x="380" y="36" text-anchor="middle" font-size="15" font-weight="700" fill="#111">ClaudeLearning — Investing Workbench</text>
+  <text x="380" y="54" text-anchor="middle" font-size="11" fill="#666">Personal portfolio analysis with Claude agents + guardrails</text>
+  <text x="20" y="86" font-size="10" font-weight="600" fill="#888" letter-spacing="1">INPUTS</text>
+  <rect x="18" y="93" width="148" height="44" rx="8" fill="#e8f4fd" stroke="#90caf9" stroke-width="1.5"/>
+  <text x="92" y="110" text-anchor="middle" font-size="11" font-weight="600" fill="#1565c0">Broker Export</text>
+  <text x="92" y="126" text-anchor="middle" font-size="9.5" fill="#1565c0">ActivePortfolio.xlsx</text>
+  <rect x="178" y="93" width="148" height="44" rx="8" fill="#e8f4fd" stroke="#90caf9" stroke-width="1.5"/>
+  <text x="252" y="110" text-anchor="middle" font-size="11" font-weight="600" fill="#1565c0">Transactions</text>
+  <text x="252" y="126" text-anchor="middle" font-size="9.5" fill="#1565c0">AllStockTransactions.xls</text>
+  <rect x="338" y="93" width="148" height="44" rx="8" fill="#fff8e1" stroke="#ffe082" stroke-width="1.5"/>
+  <text x="412" y="110" text-anchor="middle" font-size="11" font-weight="600" fill="#e65100">User Profile</text>
+  <text x="412" y="126" text-anchor="middle" font-size="9.5" fill="#e65100">research/user-views.md</text>
+  <rect x="498" y="93" width="148" height="44" rx="8" fill="#f3e5f5" stroke="#ce93d8" stroke-width="1.5"/>
+  <text x="572" y="110" text-anchor="middle" font-size="11" font-weight="600" fill="#6a1b9a">Market Data</text>
+  <text x="572" y="126" text-anchor="middle" font-size="9.5" fill="#6a1b9a">yfinance cache · FX · Web</text>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+      <path d="M1,1 L7,4 L1,7 Z" fill="#999"/>
+    </marker>
+  </defs>
+  <line x1="380" y1="137" x2="380" y2="158" stroke="#999" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="20" y="172" font-size="10" font-weight="600" fill="#888" letter-spacing="1">PYTHON SKILLS  (all math runs here — never in prose)</text>
+  <rect x="18" y="180" width="720" height="96" rx="10" fill="#f1f8e9" stroke="#aed581" stroke-width="1.5"/>
+  <rect x="30" y="192" width="95" height="70" rx="6" fill="#fff" stroke="#c5e1a5" stroke-width="1"/>
+  <text x="77" y="211" text-anchor="middle" font-size="10" font-weight="600" fill="#33691e">portfolio</text>
+  <text x="77" y="224" text-anchor="middle" font-size="10" font-weight="600" fill="#33691e">-parse</text>
+  <text x="77" y="242" text-anchor="middle" font-size="8.5" fill="#558b2f">Broker CSV → JSON</text>
+  <text x="77" y="254" text-anchor="middle" font-size="8.5" fill="#558b2f">positions + txns</text>
+  <rect x="133" y="192" width="95" height="70" rx="6" fill="#fff" stroke="#c5e1a5" stroke-width="1"/>
+  <text x="180" y="211" text-anchor="middle" font-size="10" font-weight="600" fill="#33691e">sector</text>
+  <text x="180" y="224" text-anchor="middle" font-size="10" font-weight="600" fill="#33691e">-allocation</text>
+  <text x="180" y="242" text-anchor="middle" font-size="8.5" fill="#558b2f">Weights, HHI,</text>
+  <text x="180" y="254" text-anchor="middle" font-size="8.5" fill="#558b2f">region/currency</text>
+  <rect x="236" y="192" width="95" height="70" rx="6" fill="#fff" stroke="#c5e1a5" stroke-width="1"/>
+  <text x="283" y="211" text-anchor="middle" font-size="10" font-weight="600" fill="#33691e">risk</text>
+  <text x="283" y="224" text-anchor="middle" font-size="10" font-weight="600" fill="#33691e">-metrics</text>
+  <text x="283" y="242" text-anchor="middle" font-size="8.5" fill="#558b2f">Sharpe, Sortino,</text>
+  <text x="283" y="254" text-anchor="middle" font-size="8.5" fill="#558b2f">drawdown, beta</text>
+  <rect x="339" y="192" width="95" height="70" rx="6" fill="#fff" stroke="#c5e1a5" stroke-width="1"/>
+  <text x="386" y="211" text-anchor="middle" font-size="10" font-weight="600" fill="#33691e">market</text>
+  <text x="386" y="224" text-anchor="middle" font-size="10" font-weight="600" fill="#33691e">-regime</text>
+  <text x="386" y="242" text-anchor="middle" font-size="8.5" fill="#558b2f">VIX + F&amp;G +</text>
+  <text x="386" y="254" text-anchor="middle" font-size="8.5" fill="#558b2f">SPY/200DMA label</text>
+  <rect x="442" y="192" width="95" height="70" rx="6" fill="#fff" stroke="#c5e1a5" stroke-width="1"/>
+  <text x="489" y="211" text-anchor="middle" font-size="10" font-weight="600" fill="#33691e">screener</text>
+  <text x="489" y="242" text-anchor="middle" font-size="8.5" fill="#558b2f">S&amp;P 500 ranking</text>
+  <text x="489" y="254" text-anchor="middle" font-size="8.5" fill="#558b2f">growth/momentum</text>
+  <rect x="545" y="192" width="95" height="70" rx="6" fill="#fff" stroke="#c5e1a5" stroke-width="1"/>
+  <text x="592" y="211" text-anchor="middle" font-size="10" font-weight="600" fill="#33691e">opportunity</text>
+  <text x="592" y="224" text-anchor="middle" font-size="10" font-weight="600" fill="#33691e">-scanner</text>
+  <text x="592" y="242" text-anchor="middle" font-size="8.5" fill="#558b2f">30 ranked buys</text>
+  <text x="592" y="254" text-anchor="middle" font-size="8.5" fill="#558b2f">in 3 lists</text>
+  <rect x="648" y="192" width="82" height="70" rx="6" fill="#fff" stroke="#c5e1a5" stroke-width="1"/>
+  <text x="689" y="211" text-anchor="middle" font-size="10" font-weight="600" fill="#33691e">+ more</text>
+  <text x="689" y="232" text-anchor="middle" font-size="8" fill="#558b2f">earnings-calendar</text>
+  <text x="689" y="244" text-anchor="middle" font-size="8" fill="#558b2f">momentum-check</text>
+  <text x="689" y="256" text-anchor="middle" font-size="8" fill="#558b2f">currency · charts</text>
+  <line x1="380" y1="276" x2="380" y2="297" stroke="#999" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="20" y="312" font-size="10" font-weight="600" fill="#888" letter-spacing="1">ROUTING</text>
+  <rect x="200" y="318" width="360" height="60" rx="10" fill="#fff3e0" stroke="#ffb74d" stroke-width="2"/>
+  <text x="380" y="344" text-anchor="middle" font-size="13" font-weight="700" fill="#e65100">🟡 ORCHESTRATOR</text>
+  <text x="380" y="363" text-anchor="middle" font-size="10" fill="#bf360c">Routes: broad review vs specific-decision · parallelizes skills</text>
+  <line x1="280" y1="378" x2="155" y2="428" stroke="#999" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="480" y1="378" x2="580" y2="428" stroke="#999" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <rect x="18" y="428" width="270" height="80" rx="10" fill="#e8eaf6" stroke="#9fa8da" stroke-width="1.5"/>
+  <text x="153" y="449" text-anchor="middle" font-size="11" font-weight="700" fill="#283593">BROAD REVIEW FLOW</text>
+  <text x="153" y="465" text-anchor="middle" font-size="9.5" fill="#3949ab">"rate my portfolio", "how am I positioned"</text>
+  <text x="153" y="480" text-anchor="middle" font-size="9.5" fill="#3949ab">Skills only · no agents · must include</text>
+  <text x="153" y="494" text-anchor="middle" font-size="9.5" fill="#3949ab">≥2 SELL/REDUCE signals · macro section</text>
+  <rect x="472" y="428" width="270" height="80" rx="10" fill="#fce4ec" stroke="#f48fb1" stroke-width="1.5"/>
+  <text x="607" y="449" text-anchor="middle" font-size="11" font-weight="700" fill="#880e4f">SPECIFIC DECISION FLOW</text>
+  <text x="607" y="465" text-anchor="middle" font-size="9.5" fill="#c2185b">"should I buy X?", "trim Y?"</text>
+  <text x="607" y="480" text-anchor="middle" font-size="9.5" fill="#c2185b">Three-agent pipeline — mandatory</text>
+  <text x="607" y="494" text-anchor="middle" font-size="9.5" fill="#c2185b">Primary sources required · no hallucination</text>
+  <line x1="607" y1="508" x2="607" y2="530" stroke="#999" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="607" y1="530" x2="500" y2="560" stroke="#999" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="607" y1="530" x2="700" y2="560" stroke="#999" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <rect x="432" y="560" width="132" height="72" rx="8" fill="#e8f5e9" stroke="#81c784" stroke-width="1.5"/>
+  <text x="498" y="580" text-anchor="middle" font-size="11" font-weight="700" fill="#1b5e20">🟢 BULL OFFICER</text>
+  <text x="498" y="596" text-anchor="middle" font-size="9" fill="#2e7d32">Strongest positive case</text>
+  <text x="498" y="609" text-anchor="middle" font-size="9" fill="#2e7d32">Primary sources required</text>
+  <text x="498" y="622" text-anchor="middle" font-size="9" fill="#2e7d32">Cites mgmt quotes</text>
+  <rect x="576" y="560" width="132" height="72" rx="8" fill="#ffebee" stroke="#e57373" stroke-width="1.5"/>
+  <text x="642" y="580" text-anchor="middle" font-size="11" font-weight="700" fill="#b71c1c">🔴 RISK OFFICER</text>
+  <text x="642" y="596" text-anchor="middle" font-size="9" fill="#c62828">Strongest bear case</text>
+  <text x="642" y="609" text-anchor="middle" font-size="9" fill="#c62828">Primary sources required</text>
+  <text x="642" y="622" text-anchor="middle" font-size="9" fill="#c62828">Calibrated to risk profile</text>
+  <text x="607" y="553" text-anchor="middle" font-size="9" fill="#888" font-style="italic">run in parallel</text>
+  <line x1="498" y1="632" x2="540" y2="665" stroke="#999" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="642" y1="632" x2="610" y2="665" stroke="#999" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <rect x="464" y="665" width="290" height="72" rx="8" fill="#e3f2fd" stroke="#64b5f6" stroke-width="1.5"/>
+  <text x="609" y="687" text-anchor="middle" font-size="11" font-weight="700" fill="#0d47a1">🔵 PORTFOLIO MANAGER</text>
+  <text x="609" y="703" text-anchor="middle" font-size="9" fill="#1565c0">Synthesizes bull + bear honestly</text>
+  <text x="609" y="716" text-anchor="middle" font-size="9" fill="#1565c0">Surfaces key debate · offers lean or frames decision</text>
+  <text x="609" y="729" text-anchor="middle" font-size="9" fill="#1565c0">No fake precision · words not score-math</text>
+  <rect x="18" y="560" width="260" height="178" rx="10" fill="#fafafa" stroke="#bdbdbd" stroke-width="1.5"/>
+  <text x="148" y="580" text-anchor="middle" font-size="11" font-weight="700" fill="#37474f">🔒 HOOKS (Guardrails)</text>
+  <text x="30" y="600" font-size="9.5" fill="#455a64">• enforce_risk_officer — blocks BUY/SELL/HOLD</text>
+  <text x="40" y="614" font-size="9" fill="#546e7a">without bull + bear + manager invoked</text>
+  <text x="30" y="630" font-size="9.5" fill="#455a64">• enforce_signal_reversal — blocks silent</text>
+  <text x="40" y="644" font-size="9" fill="#546e7a">flip within 14 days (must say SIGNAL CHANGE)</text>
+  <text x="30" y="660" font-size="9.5" fill="#455a64">• enforce_momentum_guardrail — warns on</text>
+  <text x="40" y="674" font-size="9" fill="#546e7a">RSI≥75 / >30% above 200DMA buys</text>
+  <text x="30" y="690" font-size="9.5" fill="#455a64">• persist_signals — saves per-ticker JSON</text>
+  <text x="30" y="706" font-size="9.5" fill="#455a64">• deny_dangerous_bash — blocks rm -rf,</text>
+  <text x="40" y="720" font-size="9" fill="#546e7a">git push, broker-domain writes</text>
+  <text x="30" y="736" font-size="9.5" fill="#455a64">• inject_context — injects today's date</text>
+  <text x="20" y="762" font-size="10" font-weight="600" fill="#888" letter-spacing="1">OUTPUTS</text>
+  <rect x="18" y="770" width="200" height="38" rx="8" fill="#f5f5f5" stroke="#bdbdbd" stroke-width="1.2"/>
+  <text x="118" y="789" text-anchor="middle" font-size="10" font-weight="600" fill="#333">📊 /daily-scan</text>
+  <text x="118" y="802" text-anchor="middle" font-size="9" fill="#666">Read-only dashboard — no trades</text>
+  <rect x="228" y="770" width="200" height="38" rx="8" fill="#f5f5f5" stroke="#bdbdbd" stroke-width="1.2"/>
+  <text x="328" y="789" text-anchor="middle" font-size="10" font-weight="600" fill="#333">📄 Daily Report</text>
+  <text x="328" y="802" text-anchor="middle" font-size="9" fill="#666">Macro + all holdings + signals</text>
+  <rect x="438" y="770" width="200" height="38" rx="8" fill="#f5f5f5" stroke="#bdbdbd" stroke-width="1.2"/>
+  <text x="538" y="789" text-anchor="middle" font-size="10" font-weight="600" fill="#333">🎯 Decision Analysis</text>
+  <text x="538" y="802" text-anchor="middle" font-size="9" fill="#666">Bull / Bear / Manager synthesis</text>
+  <rect x="648" y="770" width="100" height="38" rx="8" fill="#fff8e1" stroke="#ffe082" stroke-width="1.2"/>
+  <text x="698" y="789" text-anchor="middle" font-size="10" font-weight="600" fill="#e65100">📚 Learning</text>
+  <text x="698" y="802" text-anchor="middle" font-size="9" fill="#bf360c">note per turn</text>
+</svg>
+</main>
+<footer>ClaudeLearning Investing Workbench · Educational analysis, not investment advice.</footer>
+</body>
+</html>
