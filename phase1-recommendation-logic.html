@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Phase 1 — Opportunity Scanner Logic</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, -apple-system, sans-serif; background: #f8f9fa; color: #111; font-size: 13px; }
+
+  header { background: #1a1a2e; color: white; padding: 20px 32px; }
+  header h1 { font-size: 18px; font-weight: 700; }
+  header p { font-size: 12px; color: #aaa; margin-top: 4px; }
+
+  main { max-width: 860px; margin: 0 auto; padding: 24px 20px 40px; }
+
+  .pipeline { display: flex; flex-direction: column; gap: 0; }
+
+  .step {
+    border-left: 3px solid #ddd;
+    margin-left: 20px;
+    position: relative;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .step::before {
+    content: '';
+    position: absolute;
+    left: -8px;
+    top: 18px;
+    width: 13px;
+    height: 13px;
+    border-radius: 50%;
+    background: var(--dot-color, #999);
+    border: 2px solid #f8f9fa;
+  }
+  .step-header {
+    padding: 12px 16px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--header-bg, #f5f5f5);
+    border-radius: 0 8px 8px 0;
+    border: 1px solid var(--border-color, #e0e0e0);
+    border-left: none;
+    user-select: none;
+  }
+  .step-header:hover { filter: brightness(0.97); }
+  .step-header .label { font-weight: 700; font-size: 12px; color: var(--label-color, #555); letter-spacing: 0.5px; }
+  .step-header .title { font-weight: 600; font-size: 13.5px; }
+  .step-header .subtitle { font-size: 11.5px; color: #666; margin-top: 2px; }
+  .step-header .toggle { margin-left: auto; color: #999; font-size: 16px; transition: transform 0.2s; }
+  .step.open .toggle { transform: rotate(180deg); }
+
+  .step-body {
+    display: none;
+    padding: 14px 18px;
+    background: white;
+    border: 1px solid var(--border-color, #e0e0e0);
+    border-top: none;
+    border-left: none;
+    border-radius: 0 0 8px 8px;
+  }
+  .step.open .step-body { display: block; }
+
+  .connector {
+    height: 20px;
+    border-left: 3px solid #ddd;
+    margin-left: 20px;
+    display: flex;
+    align-items: center;
+    padding-left: 14px;
+    font-size: 11px;
+    color: #aaa;
+    font-style: italic;
+  }
+
+  .rule-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+  .rule-box { background: #f8f8f8; border: 1px solid #eee; border-radius: 6px; padding: 10px; }
+  .rule-box .rule-label { font-size: 10px; font-weight: 700; color: #888; margin-bottom: 5px; letter-spacing: 0.5px; }
+
+  .bucket-row { display: flex; gap: 10px; margin-top: 10px; }
+  .bucket { flex: 1; border-radius: 6px; padding: 10px; border: 1px solid; }
+  .bucket .bucket-name { font-weight: 700; font-size: 12px; margin-bottom: 5px; }
+  .bucket ul { padding-left: 14px; font-size: 11.5px; line-height: 1.7; }
+
+  .signal-row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; align-items: center; }
+  .signal-chip { padding: 5px 12px; border-radius: 20px; font-size: 11.5px; font-weight: 700; border: 1.5px solid; }
+
+  .list-cards { display: flex; gap: 10px; margin-top: 10px; }
+  .list-card { flex: 1; border-radius: 8px; padding: 12px; border: 1px solid; }
+  .list-card .list-name { font-weight: 700; font-size: 12px; margin-bottom: 6px; }
+  .list-card ul { padding-left: 14px; font-size: 11.5px; line-height: 1.8; }
+
+  .formula { background: #f0f7ff; border: 1px solid #b3d9ff; border-radius: 8px; padding: 12px; margin-top: 10px; }
+  .formula .formula-title { font-weight: 700; margin-bottom: 8px; color: #1565c0; }
+  .weight-bars { display: flex; gap: 6px; margin-top: 8px; }
+  .weight-bar-wrap { flex: 1; }
+  .weight-bar-label { font-size: 10.5px; font-weight: 600; margin-bottom: 3px; }
+  .weight-bar { height: 20px; border-radius: 4px; display: flex; align-items: center; padding-left: 8px; font-size: 11px; color: white; font-weight: 700; }
+
+  .evidence-grid { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+  .evidence-row { display: flex; align-items: flex-start; gap: 10px; padding: 8px 10px; border-radius: 6px; font-size: 12px; }
+  .ev-badge { font-weight: 700; font-size: 11px; padding: 2px 8px; border-radius: 12px; white-space: nowrap; min-width: 68px; text-align: center; }
+
+  .validation-grid { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+  .vrow { display: flex; gap: 8px; padding: 7px 10px; background: #f9f9f9; border-radius: 6px; font-size: 12px; align-items: flex-start; }
+  .vrow .vicon { font-size: 14px; margin-top: 1px; }
+  .vrow .vtext strong { display: block; }
+
+  .s1 { --dot-color: #1976d2; --header-bg: #e3f2fd; --border-color: #90caf9; --label-color: #1565c0; }
+  .s2 { --dot-color: #388e3c; --header-bg: #e8f5e9; --border-color: #a5d6a7; --label-color: #2e7d32; }
+  .s3 { --dot-color: #f57c00; --header-bg: #fff3e0; --border-color: #ffcc80; --label-color: #e65100; }
+  .s4 { --dot-color: #7b1fa2; --header-bg: #f3e5f5; --border-color: #ce93d8; --label-color: #6a1b9a; }
+  .s5 { --dot-color: #00838f; --header-bg: #e0f7fa; --border-color: #80deea; --label-color: #006064; }
+  .s6 { --dot-color: #c62828; --header-bg: #ffebee; --border-color: #ef9a9a; --label-color: #b71c1c; }
+
+  footer { text-align: center; padding: 20px; font-size: 11px; color: #aaa; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Phase 1 — Opportunity Scanner: Step-by-Step Logic</h1>
+  <p>ClaudeLearning Investing Workbench · How recommendations are generated</p>
+</header>
+
+<main>
+  <div style="padding: 0 0 8px; font-size: 11.5px; color: #666;">Click any step to drill down into the rules</div>
+
+  <div class="pipeline">
+
+    <div class="step s1 open" onclick="toggle(this)">
+      <div class="step-header">
+        <div>
+          <div class="label">STEP 1 · SCREENER</div>
+          <div class="title">Build the candidate universe from S&P 500</div>
+          <div class="subtitle">~50 large-cap stocks ranked by composite score</div>
+        </div>
+        <div class="toggle">▾</div>
+      </div>
+      <div class="step-body">
+        <div class="formula">
+          <div class="formula-title">Composite Ranking Score (0–1)</div>
+          <div class="weight-bars">
+            <div class="weight-bar-wrap">
+              <div class="weight-bar-label">Growth · 40%</div>
+              <div class="weight-bar" style="background:#1976d2; width:100%;">Rev YoY (cap 50%)</div>
+            </div>
+            <div class="weight-bar-wrap">
+              <div class="weight-bar-label">Momentum · 30%</div>
+              <div class="weight-bar" style="background:#388e3c; width:75%;">% above 200DMA (cap ±30%)</div>
+            </div>
+            <div class="weight-bar-wrap">
+              <div class="weight-bar-label">Quality · 30%</div>
+              <div class="weight-bar" style="background:#7b1fa2; width:75%;">Gross margin (cap 70%) + positive earnings</div>
+            </div>
+          </div>
+          <div style="margin-top:10px; font-size:11.5px; color:#555;">Missing data gets 30% of the weight (not zero) — preserves optionality on names with partial coverage.</div>
+        </div>
+        <div class="rule-grid">
+          <div class="rule-box">
+            <div class="rule-label">HARD FILTERS (before scoring)</div>
+            Market cap ≥ $10B &nbsp;·&nbsp; ADV ≥ $50M
+          </div>
+          <div class="rule-box">
+            <div class="rule-label">UNIVERSE</div>
+            S&P 500 + common sector ETFs (SMH, XLV, EFA, TLT…)
+          </div>
+          <div class="rule-box">
+            <div class="rule-label">PRIORITY FLAGS (non-blocking)</div>
+            below_micro_cap_floor · valuation_stretch · low_liquidity · negative_momentum
+          </div>
+          <div class="rule-box">
+            <div class="rule-label">OUTPUT</div>
+            Top 50 candidates with: ticker, sector, score, fwd_pe, rev_growth_yoy, gross_margin
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="connector">↓ top 50 candidates passed to momentum gate</div>
+
+    <div class="step s2" onclick="toggle(this)">
+      <div class="step-header">
+        <div>
+          <div class="label">STEP 2 · MOMENTUM PRE-FILTER</div>
+          <div class="title">Bucket every candidate: clean / extended / parabolic</div>
+          <div class="subtitle">Deterministic Python — no LLM, runs from yfinance cache in &lt;2s</div>
+        </div>
+        <div class="toggle">▾</div>
+      </div>
+      <div class="step-body">
+        <div class="bucket-row">
+          <div class="bucket" style="background:#e8f5e9; border-color:#a5d6a7;">
+            <div class="bucket-name" style="color:#2e7d32;">🟢 CLEAN</div>
+            <div style="font-size:11.5px; color:#388e3c; margin-bottom:6px;">Primary buy candidates</div>
+            <ul>
+              <li>RSI &lt; 65</li>
+              <li>≤ 30% above 200DMA</li>
+              <li>≤ 5 consecutive up days</li>
+            </ul>
+            <div style="margin-top:8px; font-size:11px; color:#555;">→ eligible for STRONG_BUY or BUY</div>
+          </div>
+          <div class="bucket" style="background:#fff8e1; border-color:#ffe082;">
+            <div class="bucket-name" style="color:#f57f17;">🟡 EXTENDED</div>
+            <div style="font-size:11.5px; color:#f9a825; margin-bottom:6px;">One flag triggered</div>
+            <ul>
+              <li>RSI 65–79</li>
+              <li>30–49% above 200DMA</li>
+              <li>6–9 up days in a row</li>
+            </ul>
+            <div style="margin-top:8px; font-size:11px; color:#555;">→ WAIT-FOR-COOLING only</div>
+          </div>
+          <div class="bucket" style="background:#ffebee; border-color:#ef9a9a;">
+            <div class="bucket-name" style="color:#c62828;">🔴 PARABOLIC</div>
+            <div style="font-size:11.5px; color:#d32f2f; margin-bottom:6px;">Dropped entirely</div>
+            <ul>
+              <li>RSI ≥ 80</li>
+              <li>&gt; 50% above 200DMA</li>
+              <li>≥ 10 consecutive up days</li>
+            </ul>
+            <div style="margin-top:8px; font-size:11px; color:#555;">→ LLM never sees these</div>
+          </div>
+        </div>
+        <div style="margin-top:12px; background:#f8f8f8; border-radius:6px; padding:10px; font-size:12px;">
+          <strong>Metrics used:</strong> RSI(14), % vs 200DMA, consecutive up-day streak, % change 5/10/30/90d, dist from 52w high. All computed from yfinance adjusted closes — not LLM guesses.
+        </div>
+      </div>
+    </div>
+
+    <div class="connector">↓ universe block (clean + extended pools with fundamentals) fed into LLM prompts</div>
+
+    <div class="step s3" onclick="toggle(this)">
+      <div class="step-header">
+        <div>
+          <div class="label">STEP 3 · THREE LLM LISTS</div>
+          <div class="title">Claude generates 3 ranked candidate lists (run sequentially)</div>
+          <div class="subtitle">Each list excludes tickers already picked by prior lists — 30 unique tickers total</div>
+        </div>
+        <div class="toggle">▾</div>
+      </div>
+      <div class="step-body">
+        <div class="list-cards">
+          <div class="list-card" style="background:#e3f2fd; border-color:#90caf9;">
+            <div class="list-name" style="color:#1565c0;">📊 List 1 — Portfolio Fit</div>
+            <ul>
+              <li>Knows current holdings</li>
+              <li>Knows sector weights (HHI)</li>
+              <li>Picks to <em>complement</em> existing exposure</li>
+              <li>Won't push any sector above 50%</li>
+            </ul>
+          </div>
+          <div class="list-card" style="background:#f3e5f5; border-color:#ce93d8;">
+            <div class="list-name" style="color:#6a1b9a;">👤 List 2 — Profile Fit</div>
+            <ul>
+              <li>Knows user profile only (risk, horizon)</li>
+              <li>Treats portfolio as blank slate</li>
+              <li>High risk → conviction growth names</li>
+              <li>Excludes List 1 tickers</li>
+            </ul>
+          </div>
+          <div class="list-card" style="background:#e8f5e9; border-color:#a5d6a7;">
+            <div class="list-name" style="color:#2e7d32;">🌍 List 3 — Market Picks</div>
+            <ul>
+              <li>No portfolio/profile context</li>
+              <li>Pure merit ranking</li>
+              <li>≥3 non-US or non-tech names</li>
+              <li>Excludes Lists 1 &amp; 2 tickers</li>
+            </ul>
+          </div>
+        </div>
+        <div style="margin-top:12px; background:#fff8e1; border:1px solid #ffe082; border-radius:6px; padding:10px; font-size:12px;">
+          <strong>ETF rule:</strong> For broad growth themes (AI, semis) → prefer ETF over stacking single names. For defensive/low-growth sectors → prefer a high-growth single name. Never recommend two ETFs tracking the same index.
+        </div>
+        <div style="margin-top:8px; background:#f8f8f8; border-radius:6px; padding:10px; font-size:12px;">
+          <strong>Cash sizing:</strong> Max per ticker = cash / 5, capped at ₪25,000. Total across all picks ≤ available cash.
+        </div>
+      </div>
+    </div>
+
+    <div class="connector">↓ LLM output enriched with deterministic yfinance data</div>
+
+    <div class="step s5" onclick="toggle(this)">
+      <div class="step-header">
+        <div>
+          <div class="label">STEP 4 · MOMENTUM POST-CHECK</div>
+          <div class="title">Overwrite LLM guesses with real data, enforce signal vocabulary</div>
+          <div class="subtitle">4 signal values only — no HOLD, AVOID, SELL in opportunity lists</div>
+        </div>
+        <div class="toggle">▾</div>
+      </div>
+      <div class="step-body">
+        <div style="font-size:12px; color:#444; margin-bottom:10px;">After the LLM picks tickers, momentum-check runs again and overwrites its guesses with verified yfinance data. Signals are forced into exactly 4 values:</div>
+        <div class="signal-row">
+          <div class="signal-chip" style="background:#e8f5e9; color:#1b5e20; border-color:#81c784;">STRONG_BUY</div>
+          <div style="font-size:11.5px; color:#555;">Clean pool, exceptional thesis — deploy now</div>
+        </div>
+        <div class="signal-row">
+          <div class="signal-chip" style="background:#f1f8e9; color:#33691e; border-color:#aed581;">BUY</div>
+          <div style="font-size:11.5px; color:#555;">Clean pool, solid thesis — deploy now or on minor dips</div>
+        </div>
+        <div class="signal-row">
+          <div class="signal-chip" style="background:#fff8e1; color:#e65100; border-color:#ffb74d;">WAIT-FOR-COOLING</div>
+          <div style="font-size:11.5px; color:#555;">Extended momentum — needs numeric trigger e.g. "RSI &lt;60 for 3 days"</div>
+        </div>
+        <div class="signal-row">
+          <div class="signal-chip" style="background:#e3f2fd; color:#0d47a1; border-color:#64b5f6;">WAIT-FOR-CATALYST</div>
+          <div style="font-size:11.5px; color:#555;">Earnings within 14 days — wait for print, then re-evaluate</div>
+        </div>
+        <div style="margin-top:12px; background:#ffebee; border:1px solid #ef9a9a; border-radius:6px; padding:10px; font-size:12px;">
+          <strong>Override priority:</strong> parabolic slip-through → WAIT-FOR-COOLING · extended + BUY → WAIT-FOR-COOLING · earnings within 14d → WAIT-FOR-CATALYST · otherwise LLM signal stands
+        </div>
+      </div>
+    </div>
+
+    <div class="connector">↓ evidence strength scored deterministically</div>
+
+    <div class="step s6" onclick="toggle(this)">
+      <div class="step-header">
+        <div>
+          <div class="label">STEP 5 · EVIDENCE STRENGTH SCORING</div>
+          <div class="title">Score each pick's thesis quality: weak / moderate / strong</div>
+          <div class="subtitle">Deterministic regex — no LLM judgment, no manufactured confidence scores</div>
+        </div>
+        <div class="toggle">▾</div>
+      </div>
+      <div class="step-body">
+        <div class="evidence-grid">
+          <div class="evidence-row" style="background:#ffebee;">
+            <div class="ev-badge" style="background:#d32f2f; color:white;">WEAK</div>
+            <div>0 inline citations in bull thesis OR bear threshold has no numeric value + operator. Example of a failing bear: <em>"if growth slows"</em> — no number, no operator.</div>
+          </div>
+          <div class="evidence-row" style="background:#fff8e1;">
+            <div class="ev-badge" style="background:#f57f17; color:white;">MODERATE</div>
+            <div>1–2 inline citations in format <code>(Source — YYYY-MM-DD)</code> AND bear threshold contains a number + operator (below / above / &lt; / &gt; / drops / exceeds).</div>
+          </div>
+          <div class="evidence-row" style="background:#e8f5e9;">
+            <div class="ev-badge" style="background:#2e7d32; color:white;">STRONG</div>
+            <div>3+ inline citations AND numeric bear threshold AND bull thesis contains a management quote keyword (said / stated / guided / CEO / CFO / commentary).</div>
+          </div>
+        </div>
+        <div style="margin-top:10px; background:#f0f7ff; border:1px solid #b3d9ff; border-radius:6px; padding:10px; font-size:12px;">
+          <strong>Why deterministic?</strong> An LLM asked "how confident are you?" manufactures precision. Regex counting citations is objective and auditable — the user can verify the sources themselves.
+        </div>
+      </div>
+    </div>
+
+    <div class="connector">↓ final validation pass</div>
+
+    <div class="step s4" onclick="toggle(this)">
+      <div class="step-header">
+        <div>
+          <div class="label">STEP 6 · VALIDATION &amp; OUTPUT</div>
+          <div class="title">Dedup, ETF overlap check, write opportunities.json</div>
+          <div class="subtitle">30 unique tickers across 3 lists — no repeats, no overlapping ETFs</div>
+        </div>
+        <div class="toggle">▾</div>
+      </div>
+      <div class="step-body">
+        <div class="validation-grid">
+          <div class="vrow">
+            <div class="vicon">🔍</div>
+            <div class="vtext"><strong>Deduplication</strong> Any ticker appearing in more than one list is flagged with <code>_duplicate_of</code>. Lists run sequentially so each excludes prior tickers — this is a safety net.</div>
+          </div>
+          <div class="vrow">
+            <div class="vicon">📦</div>
+            <div class="vtext"><strong>ETF Family Check</strong> Known ETF families (semis, S&P 500, EM, gold, bitcoin…) are looked up in a hardcoded dict. Two ETFs in the same family across any list → warning appended to output.</div>
+          </div>
+          <div class="vrow">
+            <div class="vicon">💾</div>
+            <div class="vtext"><strong>Output</strong> Written to <code>research/daily/&lt;date&gt;/opportunities.json</code>. Each item includes: ticker, signal, fit, bull_thesis (with citations), bear_threshold, catalyst, momentum_check, evidence_strength, max_invest_ils, entry_quality.</div>
+          </div>
+          <div class="vrow">
+            <div class="vicon">⚡</div>
+            <div class="vtext"><strong>Cost</strong> Phase 1 ≈ $2–4, ~5 min. Phase 2 (full bull/bear/manager per ticker) is opt-in: ~$30–50, ~25 min.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</main>
+
+<footer>ClaudeLearning Investing Workbench · Educational analysis, not investment advice.</footer>
+
+<script>
+  function toggle(el) { el.classList.toggle('open'); }
+</script>
+</body>
+</html>
