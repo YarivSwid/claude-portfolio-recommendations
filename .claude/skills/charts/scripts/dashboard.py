@@ -92,6 +92,88 @@ def _save_positions(positions: list[dict]) -> None:
     POSITIONS_PATH.write_text(json.dumps(existing, ensure_ascii=False, indent=2))
 
 
+def _load_cash_ready() -> dict:
+    """Return {'amount_usd': float|None, 'updated_at': str|None}."""
+    if not POSITIONS_PATH.exists():
+        return {"amount_usd": None, "updated_at": None}
+    try:
+        data = json.loads(POSITIONS_PATH.read_text())
+        if not isinstance(data, dict):
+            return {"amount_usd": None, "updated_at": None}
+        amt = data.get("cash_ready_usd")
+        return {
+            "amount_usd": float(amt) if amt not in (None, "") else None,
+            "updated_at": data.get("cash_ready_updated_at"),
+        }
+    except Exception:
+        return {"amount_usd": None, "updated_at": None}
+
+
+def _save_cash_ready(amount_usd: float | None) -> dict:
+    existing: dict = {}
+    if POSITIONS_PATH.exists():
+        try:
+            loaded = json.loads(POSITIONS_PATH.read_text())
+            if isinstance(loaded, dict):
+                existing = loaded
+            else:
+                existing = {"positions": loaded}
+        except Exception:
+            existing = {}
+    if amount_usd is None:
+        existing.pop("cash_ready_usd", None)
+        existing.pop("cash_ready_updated_at", None)
+    else:
+        existing["cash_ready_usd"] = float(amount_usd)
+        existing["cash_ready_updated_at"] = dt.datetime.now().isoformat(timespec="seconds")
+    POSITIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    POSITIONS_PATH.write_text(json.dumps(existing, ensure_ascii=False, indent=2))
+    return _load_cash_ready()
+
+
+def _fx_usdils() -> dict:
+    """Fetch USDILS rate via the currency-conversion skill. Returns {rate, date} or {}."""
+    script = ROOT / ".claude/skills/currency-conversion/scripts/fx.py"
+    try:
+        proc = subprocess.run(
+            ["python3", str(script)], input="{}",
+            capture_output=True, text=True, timeout=30,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            d = json.loads(proc.stdout)
+            rate = d.get("rate_ils_per_usd") or d.get("usdils") or d.get("rate")
+            date = d.get("as_of") or d.get("data_as_of") or d.get("date")
+            if rate:
+                return {"rate": float(rate), "date": date}
+    except Exception:
+        pass
+    return {}
+
+
+def _cash_ready_payload() -> dict:
+    """Bundle cash-ready + FX + staleness flag for the dashboard."""
+    cr   = _load_cash_ready()
+    fx   = _fx_usdils()
+    amt  = cr.get("amount_usd")
+    upd  = cr.get("updated_at")
+    stale = False
+    if upd:
+        try:
+            updated = dt.datetime.fromisoformat(upd)
+            stale = (dt.datetime.now() - updated).days >= 7
+        except Exception:
+            pass
+    payload: dict = {
+        "amount_usd":  amt,
+        "amount_ils":  (amt * fx["rate"]) if (amt is not None and fx) else None,
+        "updated_at":  upd,
+        "stale":       stale,
+        "fx_rate":     fx.get("rate"),
+        "fx_date":     fx.get("date"),
+    }
+    return payload
+
+
 def _cost_basis_for(symbol: str, positions: list[dict]) -> float | None:
     for p in positions:
         if p.get("symbol") == symbol or p.get("yf_symbol") == symbol:
@@ -116,19 +198,76 @@ def _run_sector_allocation() -> dict:
 
 
 def _latest_report_md() -> str:
-    """Return the most recent daily report.md content, or empty string."""
+    """Return the most recent daily report content, or empty string.
+    Tolerates filename variants: report.md, daily-report.md, daily-scan.md."""
     if not REPORT_DIR.exists():
         return ""
+    candidates = ("report.md", "daily-report.md", "daily-scan.md")
     dirs = sorted(REPORT_DIR.iterdir(), reverse=True)
     for d in dirs:
-        p = d / "report.md"
-        if p.exists():
-            return p.read_text(encoding="utf-8")
+        if not d.is_dir():
+            continue
+        for name in candidates:
+            p = d / name
+            if p.exists():
+                return p.read_text(encoding="utf-8")
     return ""
 
 
 def _md_to_html(md: str) -> str:
-    """Minimal markdown → HTML: headings, bold, tables, bullets, hr."""
+    """Markdown → HTML: headings, bold, italic, tables, bullets, blockquotes, hr.
+    Also applies signal badges (FE-1), heading anchors (FE-4), numeric cell styling (FE-6),
+    blockquote callout boxes (FE-3), and italic text support (FE-8)."""
+
+    # ---- FE-1: signal badge map ----
+    _SIGNAL_MAP = [
+        (re.compile(r"\*\*(STRONG BUY)\*\*"),  "sig sig-sbuy",   "STRONG BUY"),
+        (re.compile(r"\*\*(BUY)\*\*"),          "sig sig-buy",    "BUY"),
+        (re.compile(r"\*\*(ADD)\*\*"),          "sig sig-add",    "ADD"),
+        (re.compile(r"\*\*(KEEP)\*\*"),         "sig sig-keep",   "KEEP"),
+        (re.compile(r"\*\*(HOLD)\*\*"),         "sig sig-hold",   "HOLD"),
+        (re.compile(r"\*\*(REDUCE)\*\*"),       "sig sig-reduce", "REDUCE"),
+        (re.compile(r"\*\*(TRIM)\*\*"),         "sig sig-reduce", "TRIM"),
+        (re.compile(r"\*\*(SELL)\*\*"),         "sig sig-sell",   "SELL"),
+        (re.compile(r"\*\*(EXIT)\*\*"),         "sig sig-sell",   "EXIT"),
+        (re.compile(r"\*\*(WATCH)\*\*"),        "sig sig-watch",  "WATCH"),
+    ]
+
+    def _apply_signal_badges(text: str) -> str:
+        for pat, cls, label in _SIGNAL_MAP:
+            text = pat.sub(f'<span class="{cls}">{label}</span>', text)
+        return text
+
+    def _fmt_inline(text: str) -> str:
+        """Apply bold, italic, code, links, and signal badges to inline text."""
+        # Signal badges first (consume **TOKEN** before bold fires)
+        text = _apply_signal_badges(text)
+        # Remaining **bold**
+        text = re.sub(r"\*\*(.*?)\*\*", r"<strong>\1</strong>", text)
+        # _italic_ (single underscore, not adjacent to word chars)
+        text = re.sub(r"(?<!\w)_((?:[^_\n])+?)_(?!\w)", r"<em>\1</em>", text)
+        # `code`
+        text = re.sub(r"`(.*?)`", r"<code>\1</code>", text)
+        # [link](url)
+        text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2" target="_blank">\1</a>', text)
+        return text
+
+    # ---- FE-6: numeric cell detection ----
+    _NUM_RE = re.compile(r"^[+\-]?\$?[\d,.]+%?$")
+
+    def _fmt_cell(c: str) -> str:
+        raw = re.sub(r"[*_`]", "", c).strip()
+        badged = _apply_signal_badges(c)
+        # strip remaining markdown punctuation that wasn't consumed by badge
+        clean = re.sub(r"[*_`]", "", badged) if badged == c else badged
+        if _NUM_RE.match(raw) and raw not in ("—", "-"):
+            if raw.startswith("+"):
+                return f'<td class="num num-pos">{clean}</td>'
+            elif raw.startswith("-"):
+                return f'<td class="num num-neg">{clean}</td>'
+            return f'<td class="num">{clean}</td>'
+        return f"<td>{clean}</td>"
+
     lines = md.split("\n")
     out = []
     in_table = False
@@ -155,13 +294,20 @@ def _md_to_html(md: str) -> str:
             out.append("<hr>")
             continue
 
-        # Headings
+        # ---- FE-4: Headings with ID slugs + hover anchors ----
         m = re.match(r"^(#{1,4})\s+(.*)", line)
         if m:
             flush_ul(); flush_table()
             lvl = len(m.group(1)) + 1  # h2-h5
-            text = re.sub(r"\*\*(.*?)\*\*", r"<strong>\1</strong>", m.group(2))
-            out.append(f"<h{lvl}>{text}</h{lvl}>")
+            raw_text = m.group(2)
+            text = _fmt_inline(raw_text)
+            slug = re.sub(r"[^a-z0-9]+", "-", raw_text.lower()).strip("-")
+            out.append(
+                f'<h{lvl} id="{slug}" class="report-heading">'
+                f'{text}'
+                f'<a class="heading-anchor" href="#{slug}" title="Link to section">#</a>'
+                f'</h{lvl}>'
+            )
             continue
 
         # Table row
@@ -170,7 +316,6 @@ def _md_to_html(md: str) -> str:
             # separator row
             if all(re.match(r"^-+$", c.replace(":", "")) for c in cells if c):
                 if not in_table:
-                    # wrap previous line as thead
                     if out and out[-1].startswith("<tr"):
                         out[-1] = "<thead>" + out[-1] + "</thead><tbody>"
                     in_table = True
@@ -179,20 +324,34 @@ def _md_to_html(md: str) -> str:
             if not in_table:
                 out.append("<table>")
                 in_table = True
-            row = "".join(f"<td>{re.sub(r'[*_`]', '', c)}</td>" for c in cells)
+            row = "".join(_fmt_cell(c) for c in cells)
             out.append(f"<tr>{row}</tr>")
             continue
 
         flush_table()
+
+        # ---- FE-3: Blockquote callout boxes ----
+        if line.startswith("> "):
+            flush_ul()
+            text = _fmt_inline(line[2:].strip())
+            stripped = line[2:].strip()
+            if stripped.startswith(("⚠", "🚨")):
+                cls = "callout callout-warn"
+            elif stripped.startswith(("✓", "✅")):
+                cls = "callout callout-ok"
+            elif stripped.startswith(("ℹ",)):
+                cls = "callout callout-info"
+            else:
+                cls = "callout callout-neutral"
+            out.append(f'<blockquote class="{cls}">{text}</blockquote>')
+            continue
 
         # Bullet
         if re.match(r"^[-*]\s+", line):
             if not in_ul:
                 out.append("<ul>")
                 in_ul = True
-            text = line[2:].strip()
-            text = re.sub(r"\*\*(.*?)\*\*", r"<strong>\1</strong>", text)
-            text = re.sub(r"`(.*?)`", r"<code>\1</code>", text)
+            text = _fmt_inline(line[2:].strip())
             out.append(f"<li>{text}</li>")
             continue
 
@@ -204,9 +363,7 @@ def _md_to_html(md: str) -> str:
             continue
 
         # Normal paragraph
-        text = re.sub(r"\*\*(.*?)\*\*", r"<strong>\1</strong>", line)
-        text = re.sub(r"`(.*?)`", r"<code>\1</code>", text)
-        text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2" target="_blank">\1</a>', text)
+        text = _fmt_inline(line)
         out.append(f"<p>{text}</p>")
 
     flush_ul()
@@ -444,8 +601,11 @@ def _sector_donut_data(alloc: dict) -> dict:
     return {"traces": traces, "layout": layout}
 
 
-def _valuation_cards(info: dict) -> list[dict]:
-    current      = info.get("currentPrice") or info.get("previousClose") or info.get("navPrice")
+def _valuation_cards(info: dict, current_override: float | None = None) -> list[dict]:
+    # Prefer caller-supplied current price (resolved with freshness logic in
+    # build_ticker_payload) over info["currentPrice"], which can be a stale
+    # pre-market snapshot.
+    current      = current_override or info.get("currentPrice") or info.get("previousClose") or info.get("navPrice")
     quote_type   = (info.get("quoteType") or "").upper()
     is_etf       = quote_type in ("ETF", "MUTUALFUND")
 
@@ -558,14 +718,38 @@ def build_ticker_payload(symbol: str, positions: list[dict], period: str = "10y"
     if not info:
         warnings.append(f"No fundamentals for {symbol}")
 
-    cost_basis    = _cost_basis_for(symbol, positions)
-    current_price = (info.get("currentPrice") if info else None) or \
-                    (float(df["Close"].iloc[-1]) if not df.empty else None)
+    cost_basis = _cost_basis_for(symbol, positions)
+
+    # Prefer the latest history close over info["currentPrice"]: the `info` JSON
+    # is often cached pre-market (early-morning hours) and carries yesterday's
+    # close, while the history parquet is refreshed later in the day and has
+    # today's actual close. We only fall back to info when history is older
+    # than the info snapshot (e.g., a stock that didn't trade today).
+    hist_last_close = float(df["Close"].iloc[-1]) if not df.empty else None
+    hist_last_date  = df.index[-1].date() if not df.empty else None
+    info_price      = info.get("currentPrice") if info else None
+    today           = dt.date.today()
+
+    if hist_last_close is not None and hist_last_date is not None and hist_last_date >= today:
+        current_price = hist_last_close
+        current_price_source = f"history (close on {hist_last_date})"
+    elif info_price is not None:
+        current_price = float(info_price)
+        current_price_source = "info[currentPrice]"
+    else:
+        current_price = hist_last_close
+        current_price_source = f"history (close on {hist_last_date})" if hist_last_date else "unavailable"
+
+    if current_price is not None and hist_last_date is not None and hist_last_date < today:
+        warnings.append(
+            f"Price source: {current_price_source}. Latest cached close is {hist_last_date} "
+            f"({(today - hist_last_date).days}d old)."
+        )
 
     payload: dict = {
         "symbol":   symbol,
         "warnings": warnings,
-        "cards":    _valuation_cards(info) if info else [],
+        "cards":    _valuation_cards(info, current_price) if info else [],
         "price":    _price_data(df, symbol, cost_basis),
         "drawdown": _drawdown_data(df, symbol),
     }
@@ -619,11 +803,24 @@ def run_agent_chat(question: str, positions: list[dict]) -> str:
     )
 
     today = dt.date.today().isoformat()
+
+    cash_ctx = ""
+    try:
+        cr = _load_cash_ready()
+        if cr.get("amount_usd") is not None:
+            cash_ctx = (
+                f"Cash ready to invest: ${cr['amount_usd']:,.0f} USD"
+                + (f" (set {cr['updated_at'][:10]})" if cr.get("updated_at") else "")
+                + "\n"
+            )
+    except Exception:
+        pass
+
     prompt = f"""Today is {today}.
 
 Current portfolio holdings: {holdings_summary}
 Portfolio NAV: see sector-allocation skill output for exact figures.
-
+{cash_ctx}
 User views context (read-only — challenge, do not defer):
 {user_views}
 
@@ -1148,14 +1345,62 @@ table.holdings tr:hover td {{ background:#161920; }}
   color:#888; border-bottom:1px solid {GRID_COLOR};
 }}
 .report-wrap td {{ padding:7px 12px; border-bottom:1px solid #1a1d27; }}
-.report-wrap tr:hover td {{ background:#161920; }}
+.report-wrap tbody tr:nth-child(even) td {{ background:#111318; }}
+.report-wrap tr:hover td {{ background:#1a1f2a; }}
 .report-wrap hr {{ border:none; border-top:1px solid {GRID_COLOR}; margin:20px 0; }}
 .report-wrap code {{
   background:#1a1d27; padding:1px 6px; border-radius:4px; font-size:0.82rem;
 }}
 .report-wrap a {{ color:{ACCENT_BLUE}; }}
 .report-wrap strong {{ color:#fff; }}
+/* FE-8: italic metadata lines */
+.report-wrap em {{ color:#888; font-style:italic; }}
 .report-meta {{ font-size:0.82rem; color:#666; margin-bottom:20px; }}
+/* FE-6: numeric cells */
+.report-wrap td.num {{ text-align:right; font-variant-numeric:tabular-nums; font-family:monospace; font-size:0.83rem; }}
+.report-wrap td.num-pos {{ color:{ACCENT_GREEN}; }}
+.report-wrap td.num-neg {{ color:{ACCENT_RED}; }}
+/* FE-1: signal badges */
+.sig {{ display:inline-block; padding:1px 9px; border-radius:10px; font-size:0.78rem; font-weight:700; letter-spacing:0.04em; vertical-align:middle; }}
+.sig-sbuy   {{ background:#0a1f1a; color:#00e5cc; border:1px solid #1a3a30; }}
+.sig-buy    {{ background:#112211; color:{ACCENT_GREEN}; border:1px solid #1a3a2a; }}
+.sig-add    {{ background:#0d2211; color:#66bb6a; border:1px solid #1a3a1a; }}
+.sig-keep   {{ background:#1e2030; color:#90a4ae; border:1px solid #2a2d3a; }}
+.sig-hold   {{ background:#22201a; color:{ACCENT_YELLOW}; border:1px solid #3a3322; }}
+.sig-reduce {{ background:#2a2010; color:#ffa726; border:1px solid #3a2e18; }}
+.sig-sell   {{ background:#2a1212; color:{ACCENT_RED}; border:1px solid #3a1f1f; }}
+.sig-watch  {{ background:#1e1e10; color:#fff176; border:1px solid #2e2e18; }}
+/* FE-3: blockquote callout boxes */
+.report-wrap blockquote.callout {{
+  margin:12px 0; padding:10px 16px; border-radius:0 6px 6px 0;
+  font-size:0.88rem; line-height:1.6;
+}}
+.callout-warn    {{ border-left:4px solid {ACCENT_YELLOW}; background:#1e1a10; color:#e0d0a0; }}
+.callout-ok      {{ border-left:4px solid {ACCENT_GREEN};  background:#0d1a18; color:#a0d0c0; }}
+.callout-info    {{ border-left:4px solid {ACCENT_BLUE};   background:#0d1220; color:#a0b8d8; }}
+.callout-neutral {{ border-left:4px solid #2a2d3a; background:#13151f; color:#aaa; }}
+/* FE-4: heading anchors */
+.report-wrap .report-heading {{ position:relative; }}
+.heading-anchor {{
+  display:inline-block; margin-left:8px; font-size:0.75rem; color:#3a3d4a;
+  text-decoration:none; vertical-align:middle; opacity:0; transition:opacity 0.15s;
+}}
+.report-heading:hover .heading-anchor {{ opacity:1; color:{ACCENT_BLUE}; }}
+/* FE-2: per-holding collapsible blocks */
+.holding-block {{
+  margin:4px 0; border-left:3px solid #2a2d3a;
+  padding-left:10px; border-radius:0 4px 4px 0;
+}}
+.holding-block[open] {{ border-left-color:{ACCENT_BLUE}; }}
+.holding-summary {{
+  cursor:pointer; list-style:none; padding:4px 0;
+  font-size:0.9rem; line-height:1.6;
+}}
+.holding-summary::-webkit-details-marker {{ display:none; }}
+.holding-summary::before {{
+  content:'▶ '; font-size:0.65rem; color:#555; margin-right:4px;
+}}
+.holding-block[open] .holding-summary::before {{ content:'▼ '; color:{ACCENT_BLUE}; }}
 
 </style>
 </head>
@@ -1166,6 +1411,7 @@ table.holdings tr:hover td {{ background:#161920; }}
   <div class="tab"        onclick="switchTab('portfolio')">💼 Portfolio & AI Chat</div>
   <div class="tab"        onclick="switchTab('deep')">🔬 Deep Analysis</div>
   <div class="tab"        onclick="switchTab('opps')">💡 Opportunities</div>
+  <div class="tab"        onclick="switchTab('filtered')">🔍 Opportunity Unfiltered</div>
   <div class="tab"        onclick="switchTab('report')">📋 Daily Report</div>
 </div>
 
@@ -1206,6 +1452,23 @@ table.holdings tr:hover td {{ background:#161920; }}
 
     <!-- LEFT: Holdings table -->
     <div>
+      <div id="cash-ready-card" style="background:#13151f;border:1px solid {GRID_COLOR};border-radius:8px;padding:12px 16px;margin-bottom:16px;">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <span style="font-size:0.72rem;color:#888;text-transform:uppercase;letter-spacing:0.05em;">Cash ready to invest</span>
+          <span id="cash-ready-display" style="font-size:1.05rem;font-weight:600;color:{TEXT_COLOR};">—</span>
+          <span id="cash-ready-meta" style="font-size:0.74rem;color:#666;"></span>
+          <button class="secondary" id="cash-edit-btn" onclick="toggleCashEdit()" style="margin-left:auto;font-size:0.78rem;padding:4px 10px;">✎ Edit</button>
+        </div>
+        <div id="cash-edit-form" style="display:none;margin-top:10px;gap:8px;align-items:center;flex-wrap:wrap;">
+          <span style="font-size:0.82rem;color:#aaa;">$</span>
+          <input id="cash-input" type="number" min="0" step="any" placeholder="50000" style="background:#0f1117;border:1px solid {GRID_COLOR};border-radius:6px;color:{TEXT_COLOR};padding:6px 12px;font-size:0.9rem;outline:none;max-width:140px;"/>
+          <button class="primary" onclick="saveCash()" style="font-size:0.82rem;padding:6px 14px;">Save</button>
+          <button class="secondary" onclick="toggleCashEdit()" style="font-size:0.82rem;padding:6px 14px;">Cancel</button>
+          <button class="secondary" onclick="clearCash()" style="font-size:0.78rem;padding:4px 10px;color:#aaa;">Clear</button>
+          <span id="cash-save-status" style="font-size:0.78rem;color:#888;"></span>
+        </div>
+        <div id="cash-stale-warn" style="display:none;margin-top:8px;font-size:0.78rem;color:{ACCENT_YELLOW};">⚠ Last updated more than 7 days ago — update if your cash position has changed.</div>
+      </div>
       <h2 style="margin-bottom:16px;font-size:1.1rem;">Holdings</h2>
       <div class="port-actions">
         <button class="primary" onclick="toggleAddForm()">+ Add position</button>
@@ -1341,13 +1604,16 @@ table.holdings tr:hover td {{ background:#161920; }}
   <div class="opp-refresh-bar">
     <h2 style="font-size:1.15rem;">💡 Opportunities</h2>
     <span id="opps-date" style="font-size:0.82rem;color:#666;"></span>
-    <button class="secondary" onclick="loadOpportunities()" style="font-size:0.82rem;padding:6px 14px;">🔄 Refresh</button>
-    <button class="primary"   onclick="runOpportunityScan()" id="opps-run-btn" style="font-size:0.82rem;padding:6px 14px;">▶ Run New Scan</button>
+    <button type="button" class="secondary" onclick="loadOpportunities(); return false;" style="font-size:0.82rem;padding:6px 14px;">🔄 Refresh</button>
+    <button type="button" class="primary"   onclick="runOpportunityScan(); return false;" id="opps-run-btn" style="font-size:0.82rem;padding:6px 14px;">▶ Run New Scan</button>
     <span id="opps-loading" style="font-size:0.82rem;color:#888;"></span>
   </div>
-  <p style="font-size:0.82rem;color:#666;margin-bottom:20px;">
+  <p style="font-size:0.82rem;color:#666;margin-bottom:8px;">
     Three independent lists — sorted by agent score. Runs daily with the report.
   </p>
+  <div id="opps-universe" style="font-size:0.78rem;color:#888;margin-bottom:20px;
+       background:#1a1a1a;border:1px solid #2a2a2a;border-radius:4px;padding:8px 12px;display:none;">
+  </div>
   <div class="opp-columns">
     <div>
       <div class="opp-col-title" style="color:{ACCENT_BLUE};">📊 List 1 — Portfolio Fit
@@ -1370,14 +1636,58 @@ table.holdings tr:hover td {{ background:#161920; }}
   </div>
 </div>
 
+<!-- ================================================================ TAB 4b: FILTERED -->
+<div id="tab-filtered" class="tab-content">
+  <div class="opp-refresh-bar">
+    <h2 style="font-size:1.15rem;">🔍 Opportunity Unfiltered</h2>
+    <span id="unf-date" style="font-size:0.82rem;color:#666;"></span>
+    <button type="button" class="secondary" onclick="loadUnfiltered(); return false;" style="font-size:0.82rem;padding:6px 14px;">🔄 Refresh</button>
+    <button type="button" class="primary"   onclick="runUnfilteredScan(); return false;" id="unf-run-btn" style="font-size:0.82rem;padding:6px 14px;">▶ Run No-Filter Scan</button>
+    <span id="unf-loading" style="font-size:0.82rem;color:#888;"></span>
+  </div>
+  <p style="font-size:0.82rem;color:#666;margin-bottom:8px;">
+    5 picks per list from the FULL universe — parabolic-flagged tickers included,
+    weak-evidence rows kept. Excludes tickers already in the main 💡 Opportunities scan
+    so this view is purely "what the filters hid from me."
+  </p>
+  <div id="unf-universe" style="font-size:0.78rem;color:#888;margin-bottom:20px;
+       background:#1a1a1a;border:1px solid #2a2a2a;border-radius:4px;padding:8px 12px;display:none;">
+  </div>
+  <div class="opp-columns">
+    <div>
+      <div class="opp-col-title" style="color:{ACCENT_BLUE};">📊 List 1 — Portfolio Fit
+        <div style="font-size:0.7rem;font-weight:400;color:#666;margin-top:2px;text-transform:none;letter-spacing:0;">Same prompt as main, no filters</div>
+      </div>
+      <div id="unf-list1"></div>
+    </div>
+    <div>
+      <div class="opp-col-title" style="color:{ACCENT_GREEN};">👤 List 2 — Profile Fit
+        <div style="font-size:0.7rem;font-weight:400;color:#666;margin-top:2px;text-transform:none;letter-spacing:0;">Same prompt as main, no filters</div>
+      </div>
+      <div id="unf-list2"></div>
+    </div>
+    <div>
+      <div class="opp-col-title" style="color:{ACCENT_YELLOW};">🌍 List 3 — Market Picks
+        <div style="font-size:0.7rem;font-weight:400;color:#666;margin-top:2px;text-transform:none;letter-spacing:0;">Same prompt as main, no filters</div>
+      </div>
+      <div id="unf-list3"></div>
+    </div>
+  </div>
+</div>
+
 <!-- ================================================================ TAB 5: REPORT -->
 <div id="tab-report" class="tab-content">
   <div style="max-width:900px;margin:0 auto;">
-    <div style="display:flex;align-items:center;gap:16px;margin-bottom:20px;">
+    <div style="display:flex;align-items:center;gap:16px;margin-bottom:8px;flex-wrap:wrap;">
       <h2 style="font-size:1.2rem;">Daily Report</h2>
       <span class="report-meta" id="report-date-label">{report_date}</span>
-      <button class="secondary" onclick="loadReport()" style="margin-left:auto;font-size:0.82rem;padding:6px 14px;">🔄 Refresh</button>
+      <button class="primary" id="report-run-btn" onclick="runReport()" style="margin-left:auto;font-size:0.82rem;padding:6px 14px;">▶ Generate Daily Report</button>
+      <button class="secondary" id="improve-run-btn" onclick="runImprove()" style="font-size:0.82rem;padding:6px 14px;">✨ Suggest improvements</button>
+      <button class="secondary" onclick="loadReport()" style="font-size:0.82rem;padding:6px 14px;">🔄 Refresh</button>
     </div>
+    <div id="report-status" style="font-size:0.82rem;color:#888;margin-bottom:8px;min-height:1.2em;"></div>
+    <div id="improve-status" style="font-size:0.82rem;color:#888;margin-bottom:8px;min-height:1.2em;"></div>
+    <div id="improve-panel" style="display:none;background:#1a1d27;border:1px solid {GRID_COLOR};border-radius:8px;padding:18px 22px;margin-bottom:18px;"></div>
     <div class="report-wrap" id="report-content">
       <p style="color:#888">Loading report…</p>
     </div>
@@ -1391,12 +1701,13 @@ const cfg    = {{responsive:true, displayModeBar:true}};
 
 // ================================================================ TAB SWITCHING
 function switchTab(name) {{
-  const names = ['charts','portfolio','deep','opps','report'];
+  const names = ['charts','portfolio','deep','opps','filtered','report'];
   document.querySelectorAll('.tab').forEach((t,i) => t.classList.toggle('active', names[i] === name));
   document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
   document.getElementById('tab-' + name).classList.add('active');
-  if (name === 'opps') loadOpportunities();
-  if (name === 'report') loadReport();
+  if (name === 'opps')     loadOpportunities();
+  if (name === 'filtered') loadUnfiltered();
+  if (name === 'report')   {{ loadReport(); _checkReportRunning(); _checkImproveRunning(); }}
 }}
 
 // ================================================================ REPORT (live reload)
@@ -1410,7 +1721,283 @@ async function loadReport() {{
     if (d.error) {{ el.innerHTML = `<p style='color:#f88'>${{d.error}}</p>`; return; }}
     el.innerHTML = d.html;
     if (meta && d.date) meta.textContent = d.date;
+    // FE-2: wrap per-holding <li> items in collapsible <details> blocks
+    _wrapHoldingBlocks(el);
   }} catch(e) {{ el.innerHTML = "<p style='color:#f88'>Failed to load report.</p>"; }}
+}}
+
+function _wrapHoldingBlocks(container) {{
+  // Find the Per-holding Analysis section by heading text
+  let inHoldings = false;
+  const nodes = Array.from(container.childNodes);
+  for (const node of nodes) {{
+    if (node.nodeType !== 1) continue;
+    const tag = node.tagName;
+    const txt = node.textContent || '';
+    if (tag.match(/^H[2-5]$/)) {{
+      inHoldings = txt.toLowerCase().includes('per-holding');
+      if (!inHoldings && txt.toLowerCase().includes('early mover')) break;
+      continue;
+    }}
+    if (!inHoldings) continue;
+    // Each holding is a <ul> containing <li> items that start with a ticker
+    if (tag === 'UL') {{
+      const items = Array.from(node.querySelectorAll('li'));
+      let i = 0;
+      while (i < items.length) {{
+        const li = items[i];
+        const html = li.innerHTML;
+        // Detect holding-start: contains a signal badge class
+        if (html.includes('class="sig ')) {{
+          // Collect subsequent non-signal <li> items as detail lines
+          const summary = li.cloneNode(true);
+          const details = document.createElement('details');
+          details.className = 'holding-block';
+          // Open by default for action signals; closed for KEEP
+          const isKeep = html.includes('sig-keep');
+          if (!isKeep) details.setAttribute('open', '');
+          const sumEl = document.createElement('summary');
+          sumEl.className = 'holding-summary';
+          sumEl.innerHTML = summary.innerHTML;
+          details.appendChild(sumEl);
+          // Gather detail lines (non-signal siblings until next signal li)
+          i++;
+          while (i < items.length && !items[i].innerHTML.includes('class="sig ')) {{
+            const detail = items[i].cloneNode(true);
+            details.appendChild(detail);
+            items[i].remove();
+            i++;
+          }}
+          li.replaceWith(details);
+        }} else {{
+          i++;
+        }}
+      }}
+    }}
+  }}
+}}
+
+// ---- Generate daily report (background) ----
+let reportPollTimer = null;
+function _setReportStatus(text, color) {{
+  const s = document.getElementById('report-status');
+  if (!s) return;
+  s.textContent = text || '';
+  s.style.color = color || '#888';
+}}
+async function runReport() {{
+  const btn = document.getElementById('report-run-btn');
+  if (!btn) return;
+  if (!confirm('Generate today\\'s daily report? This invokes the agent pipeline and can take 5-15 minutes.')) return;
+  btn.disabled = true;
+  btn.textContent = '⏳ Starting…';
+  _setReportStatus('Starting report generation…', '{ACCENT_YELLOW}');
+  try {{
+    const r = await fetch(SERVER + '/report/run', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: '{{}}'
+    }});
+    const d = await r.json();
+    if (d.error) {{
+      _setReportStatus('Error: ' + d.error, '{ACCENT_RED}');
+      btn.disabled = false; btn.textContent = '▶ Generate Daily Report';
+      return;
+    }}
+    if (d.started === false) {{
+      _setReportStatus(d.message || 'Already running…', '{ACCENT_YELLOW}');
+    }}
+    startReportPolling();
+  }} catch(e) {{
+    _setReportStatus('Failed to start: ' + e, '{ACCENT_RED}');
+    btn.disabled = false; btn.textContent = '▶ Generate Daily Report';
+  }}
+}}
+function startReportPolling() {{
+  if (reportPollTimer) clearInterval(reportPollTimer);
+  let ticks = 0;
+  reportPollTimer = setInterval(async () => {{
+    ticks++;
+    try {{
+      const r = await fetch(SERVER + '/report/status');
+      const d = await r.json();
+      const btn = document.getElementById('report-run-btn');
+      if (d.status === 'running') {{
+        const mins = Math.floor(ticks * 5 / 60);
+        const secs = (ticks * 5) % 60;
+        _setReportStatus(`⏳ Generating report… (${{mins}}m ${{secs}}s elapsed since polling started — agent pipeline typically takes 5-15 min)`, '{ACCENT_YELLOW}');
+        if (btn) {{ btn.disabled = true; btn.textContent = '⏳ Running…'; }}
+      }} else {{
+        clearInterval(reportPollTimer); reportPollTimer = null;
+        if (btn) {{ btn.disabled = false; btn.textContent = '▶ Generate Daily Report'; }}
+        if (d.status === 'done') {{
+          _setReportStatus(`✓ Report ready for ${{d.date}}. Reloading…`, '{ACCENT_GREEN}');
+          loadReport();
+        }} else if (d.status === 'error' || d.error) {{
+          _setReportStatus('Finished with error: ' + (d.error || 'unknown'), '{ACCENT_RED}');
+        }} else {{
+          _setReportStatus('Idle (no report produced).', '#888');
+        }}
+      }}
+    }} catch(e) {{ /* keep polling */ }}
+  }}, 5000);
+}}
+// Resume polling if a run is already in progress when the tab opens
+async function _checkReportRunning() {{
+  try {{
+    const r = await fetch(SERVER + '/report/status');
+    const d = await r.json();
+    if (d.status === 'running') startReportPolling();
+  }} catch(e) {{}}
+}}
+
+// ---- Suggest improvements (background) ----
+let improvePollTimer = null;
+function _setImproveStatus(text, color) {{
+  const s = document.getElementById('improve-status');
+  if (!s) return;
+  s.textContent = text || '';
+  s.style.color = color || '#888';
+}}
+function _esc(s) {{
+  if (s == null) return '';
+  return String(s).replace(/[&<>"']/g, c => ({{
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }})[c]);
+}}
+async function runImprove() {{
+  const btn = document.getElementById('improve-run-btn');
+  if (!btn) return;
+  if (!confirm('Run the report-improvement chain? Invokes stock-analyst + frontend-developer in parallel, then report-reviewer. Takes 3-10 minutes and uses Claude API tokens.')) return;
+  btn.disabled = true;
+  btn.textContent = '⏳ Starting…';
+  _setImproveStatus('Starting improvement chain…', '{ACCENT_YELLOW}');
+  try {{
+    const r = await fetch(SERVER + '/report/improve/run', {{
+      method: 'POST', headers: {{'Content-Type':'application/json'}}, body: '{{}}'
+    }});
+    const d = await r.json();
+    if (d.error) {{
+      _setImproveStatus('Error: ' + d.error, '{ACCENT_RED}');
+      btn.disabled = false; btn.textContent = '✨ Suggest improvements';
+      return;
+    }}
+    if (d.started === false) _setImproveStatus(d.message || 'Already running…', '{ACCENT_YELLOW}');
+    startImprovePolling();
+  }} catch(e) {{
+    _setImproveStatus('Failed to start: ' + e, '{ACCENT_RED}');
+    btn.disabled = false; btn.textContent = '✨ Suggest improvements';
+  }}
+}}
+function startImprovePolling() {{
+  if (improvePollTimer) clearInterval(improvePollTimer);
+  let ticks = 0;
+  improvePollTimer = setInterval(async () => {{
+    ticks++;
+    try {{
+      const r = await fetch(SERVER + '/report/improve/status');
+      const d = await r.json();
+      const btn = document.getElementById('improve-run-btn');
+      if (d.status === 'running') {{
+        const mins = Math.floor(ticks * 5 / 60);
+        const secs = (ticks * 5) % 60;
+        _setImproveStatus(`⏳ Running improvement chain… (${{mins}}m ${{secs}}s — analyst + frontend in parallel then reviewer; typically 3-10 min)`, '{ACCENT_YELLOW}');
+        if (btn) {{ btn.disabled = true; btn.textContent = '⏳ Running…'; }}
+      }} else {{
+        clearInterval(improvePollTimer); improvePollTimer = null;
+        if (btn) {{ btn.disabled = false; btn.textContent = '✨ Suggest improvements'; }}
+        if (d.status === 'error') {{
+          _setImproveStatus('Finished with error: ' + d.error, '{ACCENT_RED}');
+        }} else if (d.status === 'done') {{
+          _setImproveStatus(`✓ Proposals ready for ${{d.date}}. Loading…`, '{ACCENT_GREEN}');
+          loadImprovePanel();
+        }} else {{
+          _setImproveStatus('Idle (no proposals produced).', '#888');
+        }}
+      }}
+    }} catch(e) {{ /* keep polling */ }}
+  }}, 5000);
+}}
+async function _checkImproveRunning() {{
+  try {{
+    const r = await fetch(SERVER + '/report/improve/status');
+    const d = await r.json();
+    if (d.status === 'running') startImprovePolling();
+    else if (d.status === 'done') loadImprovePanel();
+  }} catch(e) {{}}
+}}
+async function loadImprovePanel() {{
+  const panel = document.getElementById('improve-panel');
+  if (!panel) return;
+  panel.style.display = 'block';
+  panel.innerHTML = "<p style='color:#888'>Loading proposals…</p>";
+  try {{
+    const r = await fetch(SERVER + '/report/improve/result');
+    const d = await r.json();
+    if (d.error) {{ panel.innerHTML = `<p style='color:#f88'>${{_esc(d.error)}}</p>`; return; }}
+    renderImprovePanel(d);
+  }} catch(e) {{
+    panel.innerHTML = "<p style='color:#f88'>Failed to load proposals.</p>";
+  }}
+}}
+function renderImprovePanel(d) {{
+  const panel = document.getElementById('improve-panel');
+  const reviewer = d.reviewer || {{}};
+  const analyst  = d.analyst_proposals || {{}};
+  const frontend = d.frontend_proposals || {{}};
+  const ranked   = (reviewer.ranked || []);
+  const rejected = (reviewer.rejected || []);
+  const summary  = reviewer.summary || '(no summary)';
+  const sourceP  = d._source_path || 'research/daily/.../report-improvements.json';
+
+  // Build a lookup of all proposals by id from analyst + frontend
+  const lookup = {{}};
+  (analyst.proposals  || []).forEach(p => lookup[p.id] = {{...p, _from:'stock-analyst'}});
+  (frontend.proposals || []).forEach(p => lookup[p.id] = {{...p, _from:'frontend-developer'}});
+
+  const html = [];
+  html.push(`<div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;flex-wrap:wrap;">`);
+  html.push(`<h3 style="font-size:1rem;color:{ACCENT_BLUE};margin:0;">✨ Proposed improvements</h3>`);
+  html.push(`<span style="font-size:0.78rem;color:#666;">${{_esc(sourceP)}}</span>`);
+  html.push(`<button class="secondary" style="margin-left:auto;font-size:0.78rem;padding:4px 10px;" onclick="document.getElementById('improve-panel').style.display='none'">Hide</button>`);
+  html.push(`</div>`);
+
+  html.push(`<div style="background:#13151f;border-left:3px solid {ACCENT_BLUE};padding:10px 14px;margin-bottom:14px;font-size:0.88rem;line-height:1.55;white-space:pre-wrap;">${{_esc(summary)}}</div>`);
+
+  if (ranked.length) {{
+    html.push(`<h4 style="font-size:0.85rem;color:{ACCENT_GREEN};margin:14px 0 8px;">Ranked proposals (${{ranked.length}})</h4>`);
+    ranked.forEach((r, i) => {{
+      const p = lookup[r.id] || {{}};
+      const title = r.title || p.title || r.id;
+      const from  = r.from  || p._from || '—';
+      const reason = r.rationale || '';
+      const change = p.change || p.change_summary || '';
+      html.push(`<div style="background:#13151f;border:1px solid {GRID_COLOR};border-radius:6px;padding:10px 14px;margin-bottom:8px;">`);
+      html.push(`<div style="font-size:0.88rem;margin-bottom:4px;"><strong style="color:{TEXT_COLOR};">#${{i+1}}</strong> <span style="color:{ACCENT_YELLOW};">[${{_esc(from)}}]</span> <strong>${{_esc(title)}}</strong></div>`);
+      if (reason) html.push(`<div style="font-size:0.8rem;color:#aaa;margin-bottom:6px;">${{_esc(reason)}}</div>`);
+      if (change) html.push(`<details style="font-size:0.8rem;color:#999;"><summary style="cursor:pointer;color:#888;">Show change details</summary><div style="margin-top:6px;white-space:pre-wrap;font-family:monospace;font-size:0.78rem;color:#bbb;">${{_esc(change)}}</div></details>`);
+      html.push(`</div>`);
+    }});
+  }} else {{
+    html.push(`<p style="color:#888;font-size:0.85rem;">No proposals ranked.</p>`);
+  }}
+
+  if (rejected.length) {{
+    html.push(`<details style="margin-top:14px;"><summary style="cursor:pointer;color:#888;font-size:0.82rem;">Rejected proposals (${{rejected.length}})</summary><div style="margin-top:8px;">`);
+    rejected.forEach(rj => {{
+      html.push(`<div style="font-size:0.8rem;color:#888;margin-bottom:4px;"><strong>${{_esc(rj.id||'?')}}</strong> <em>${{_esc(rj.title||'')}}</em> — ${{_esc(rj.why||'')}}</div>`);
+    }});
+    html.push(`</div></details>`);
+  }}
+
+  html.push(`<hr style="border:none;border-top:1px solid {GRID_COLOR};margin:16px 0;">`);
+  html.push(`<div style="font-size:0.82rem;color:#aaa;line-height:1.6;">`);
+  html.push(`<strong style="color:{ACCENT_YELLOW};">To apply these:</strong> switch to your Claude Code session and say:`);
+  html.push(`<div style="background:#0f1117;border:1px solid {GRID_COLOR};border-radius:4px;padding:8px 12px;margin-top:8px;font-family:monospace;font-size:0.82rem;color:{ACCENT_BLUE};">apply the report improvements from ${{_esc(sourceP)}}</div>`);
+  html.push(`<div style="margin-top:8px;color:#888;">Your main session will read the JSON, ask you which proposals to apply, and write the changes to <code>_md_to_html</code>, the Report tab CSS, and/or <code>.claude/commands/daily-report.md</code>.</div>`);
+  html.push(`</div>`);
+
+  panel.innerHTML = html.join('');
 }}
 
 // ================================================================ TAB 1: CHARTS
@@ -1691,6 +2278,87 @@ async function savePortfolio() {{
 
 renderHoldings();
 
+// ---- Cash ready to invest ----
+function _fmtUSD(v) {{ return v == null ? '—' : ('$' + Number(v).toLocaleString('en-US',{{maximumFractionDigits:0}})); }}
+function _fmtILS(v) {{ return v == null ? '' : ('₪' + Number(v).toLocaleString('en-US',{{maximumFractionDigits:0}})); }}
+async function loadCashReady() {{
+  try {{
+    const r = await fetch(SERVER + '/cash-ready');
+    const d = await r.json();
+    const disp = document.getElementById('cash-ready-display');
+    const meta = document.getElementById('cash-ready-meta');
+    const card = document.getElementById('cash-ready-card');
+    const warn = document.getElementById('cash-stale-warn');
+    if (d.amount_usd == null) {{
+      disp.textContent = 'not set';
+      disp.style.color = '#666';
+      meta.textContent = 'Click Edit to set the cash you have ready to deploy.';
+      card.style.borderColor = '{GRID_COLOR}';
+      warn.style.display = 'none';
+    }} else {{
+      disp.textContent = _fmtUSD(d.amount_usd);
+      disp.style.color = '{ACCENT_GREEN}';
+      const ils  = d.amount_ils != null ? _fmtILS(d.amount_ils) : '';
+      const fxd  = d.fx_date ? ` (FX ${{d.fx_date}})` : '';
+      const upd  = d.updated_at ? ` · updated ${{d.updated_at.slice(0,10)}}` : '';
+      meta.textContent = (ils ? `~${{ils}}${{fxd}}` : '') + upd;
+      if (d.stale) {{
+        card.style.borderColor = '{ACCENT_YELLOW}';
+        warn.style.display = 'block';
+      }} else {{
+        card.style.borderColor = '{GRID_COLOR}';
+        warn.style.display = 'none';
+      }}
+    }}
+    // Pre-fill the input with current value for easier edits
+    const input = document.getElementById('cash-input');
+    if (input && d.amount_usd != null) input.value = d.amount_usd;
+  }} catch(e) {{ /* silent */ }}
+}}
+function toggleCashEdit() {{
+  const f = document.getElementById('cash-edit-form');
+  f.style.display = f.style.display === 'flex' ? 'none' : 'flex';
+  if (f.style.display === 'flex') {{
+    const input = document.getElementById('cash-input');
+    setTimeout(() => input && input.focus(), 50);
+  }}
+}}
+async function saveCash() {{
+  const status = document.getElementById('cash-save-status');
+  const input  = document.getElementById('cash-input');
+  const raw    = input.value.trim();
+  if (raw === '') {{ status.textContent = 'Enter an amount or click Clear'; status.style.color = '{ACCENT_RED}'; return; }}
+  const amount = Number(raw);
+  if (!Number.isFinite(amount) || amount < 0) {{ status.textContent = 'Invalid amount'; status.style.color = '{ACCENT_RED}'; return; }}
+  status.textContent = '💾 Saving…';
+  status.style.color = '#888';
+  try {{
+    const r = await fetch(SERVER + '/cash-ready', {{
+      method: 'POST', headers: {{'Content-Type':'application/json'}},
+      body: JSON.stringify({{amount_usd: amount}}),
+    }});
+    const d = await r.json();
+    if (d.error) {{ status.textContent = 'Error: ' + d.error; status.style.color = '{ACCENT_RED}'; return; }}
+    status.textContent = '✓ Saved';
+    status.style.color = '{ACCENT_GREEN}';
+    await loadCashReady();
+    setTimeout(() => {{ status.textContent = ''; toggleCashEdit(); }}, 800);
+  }} catch(e) {{ status.textContent = 'Save failed: ' + e.message; status.style.color = '{ACCENT_RED}'; }}
+}}
+async function clearCash() {{
+  if (!confirm('Clear cash-ready amount?')) return;
+  try {{
+    await fetch(SERVER + '/cash-ready', {{
+      method: 'POST', headers: {{'Content-Type':'application/json'}},
+      body: JSON.stringify({{amount_usd: null}}),
+    }});
+    document.getElementById('cash-input').value = '';
+    await loadCashReady();
+    toggleCashEdit();
+  }} catch(e) {{}}
+}}
+loadCashReady();
+
 // Quick-ask chips
 const quickQuestions = [
   'What is the overall portfolio risk today?',
@@ -1835,12 +2503,53 @@ function renderOppCard(item) {{
     ? `<div class="opp-row" style="font-style:italic;color:#aaa;font-size:0.82rem;">
          💬 ${{item.manager_summary}}</div>`
     : '';
+
+  // New schema (post-upgrade): bull_thesis / bear_threshold / catalyst / evidence_strength.
+  // Legacy fallback: bull_point / risk_point.
+  const bullText = item.bull_thesis || item.bull_point || '—';
+  const bearText = item.bear_threshold || item.risk_point || '—';
+
+  // evidence_strength badge — coloured by tier
+  const evMap = {{
+    weak:     {{bg:'#3a1e1e', border:'#cc6666', txt:'#ffaaaa'}},
+    moderate: {{bg:'#3a2f1e', border:'#cc9966', txt:'#ffd699'}},
+    strong:   {{bg:'#1e3a2f', border:'#66cc99', txt:'#aaffd6'}},
+  }};
+  const ev = item.evidence_strength;
+  const evBadge = ev && evMap[ev]
+    ? `<span style="font-size:0.7rem;background:${{evMap[ev].bg}};color:${{evMap[ev].txt}};
+         border:1px solid ${{evMap[ev].border}};border-radius:3px;padding:1px 6px;
+         margin-left:6px;vertical-align:middle;">evidence: ${{ev}}</span>`
+    : '';
+
+  // catalyst row — show date + what_to_watch when populated
+  let catalystLine = '';
+  if (item.catalyst && item.catalyst.type && item.catalyst.type !== 'none') {{
+    const cd = item.catalyst.date ? ` (${{item.catalyst.date}})` : '';
+    const cw = item.catalyst.what_to_watch ? ` — ${{item.catalyst.what_to_watch}}` : '';
+    catalystLine = `<div class="opp-row">📅 ${{item.catalyst.type}}${{cd}}${{cw}}</div>`;
+  }} else if (item.catalyst && item.catalyst.what_to_watch) {{
+    catalystLine = `<div class="opp-row">📅 ${{item.catalyst.what_to_watch}}</div>`;
+  }}
+
+  // cooling_trigger row — only shown for WAIT-FOR-COOLING signals
+  const coolingLine = item.cooling_trigger
+    ? `<div class="opp-row" style="color:#ffd699;">🌡 cooling trigger: ${{item.cooling_trigger}}</div>`
+    : '';
+
+  // entry_quality + when_to_buy
+  const eq = item.entry_quality ? `<span style="font-size:0.72rem;color:#888;">[${{item.entry_quality}}]</span> ` : '';
+  const whenLine = item.when_to_buy
+    ? `<div class="opp-row">⏱ ${{eq}}${{item.when_to_buy}}</div>`
+    : '';
+
   return `
   <div class="opp-card">
     <div class="opp-card-header">
       <span class="opp-ticker">${{item.ticker || '?'}}</span>
       <span class="opp-type">${{typeLabel}}</span>
       <span class="opp-signal ${{signalC}}">${{item.signal || '—'}}</span>
+      ${{evBadge}}
       ${{agentBadge}}
       <span class="opp-score ${{fc}}">${{fitLabel(item.fit)}}</span>
       <button class="secondary" style="margin-left:auto;padding:4px 12px;font-size:0.78rem;"
@@ -1848,12 +2557,31 @@ function renderOppCard(item) {{
     </div>
     <div class="opp-name">${{item.name || ''}}</div>
     <div class="opp-row"><strong>Why:</strong> ${{item.reason_fits || '—'}}</div>
-    <div class="opp-row">🐂 ${{item.bull_point || '—'}}</div>
-    <div class="opp-row">🛡 ${{item.risk_point || '—'}}</div>
+    <div class="opp-row">🐂 ${{bullText}}</div>
+    <div class="opp-row">🛡 ${{bearText}}</div>
+    ${{catalystLine}}
+    ${{coolingLine}}
+    ${{whenLine}}
     ${{managerLine}}
     <div class="opp-invest">💰 Max invest: ₪${{(item.max_invest_ils || 0).toLocaleString()}}</div>
     <div class="opp-meta">data_as_of: ${{item.data_as_of || '—'}}</div>
   </div>`;
+}}
+
+function renderUniverseQuality(uq) {{
+  const el = document.getElementById('opps-universe');
+  if (!el) return;
+  if (!uq) {{ el.style.display = 'none'; return; }}
+  const dropped = (uq.parabolic_dropped || []).join(', ') || '(none)';
+  el.style.display = 'block';
+  el.innerHTML =
+    `<strong style="color:#aaa;">📡 Universe pre-filter</strong> — `
+    + `<span style="color:#66cc99;">${{uq.clean_count || 0}} clean</span> · `
+    + `<span style="color:#ffd699;">${{uq.extended_count || 0}} extended</span> · `
+    + `<span style="color:#ff9999;">${{(uq.parabolic_dropped || []).length}} parabolic dropped</span>`
+    + ` <span style="color:#666;">(${{uq.data_as_of || 'n/a'}})</span>`
+    + `<div style="margin-top:6px;color:#888;">Dropped (RSI≥80 OR &gt;50% above 200DMA OR ≥10 up-day streak): `
+    + `<span style="color:#ff9999;">${{dropped}}</span></div>`;
 }}
 
 function renderOppList(containerId, items) {{
@@ -1867,6 +2595,29 @@ function renderOppList(containerId, items) {{
 
 async function loadOpportunities() {{
   document.getElementById('opps-loading').textContent = '⏳ Loading…';
+  // First check whether a scan is currently in flight — if so, switch into
+  // poll mode (lock the button, render per-list state) instead of painting
+  // stale results from the prior scan.
+  try {{
+    const statusRes  = await fetch(`${{SERVER}}/opportunities/status`);
+    const statusData = await statusRes.json();
+    if (statusData.status === 'running') {{
+      const btn = document.getElementById('opps-run-btn');
+      if (btn && !btn.disabled) {{
+        btn.disabled = true;
+        btn.dataset.origLabel = btn.dataset.origLabel || btn.textContent;
+        btn.textContent = '⏳ Running…';
+      }}
+      // Clear all slots; the poll tick will paint per-list state next.
+      ['opps-list1','opps-list2','opps-list3'].forEach(id => {{
+        const el = document.getElementById(id);
+        if (el) el.innerHTML = '';
+      }});
+      _startOppsPoll(btn);
+      return;
+    }}
+  }} catch(e) {{ /* fall through to normal load */ }}
+
   try {{
     const res  = await fetch(`${{SERVER}}/opportunities`);
     const data = await res.json();
@@ -1875,6 +2626,7 @@ async function loadOpportunities() {{
       return;
     }}
     document.getElementById('opps-date').textContent = data.date ? 'Last scan: ' + data.date : '';
+    renderUniverseQuality(data._universe_quality);
     renderOppList('opps-list1', data.list1_portfolio_fit);
     renderOppList('opps-list2', data.list2_profile_fit);
     renderOppList('opps-list3', data.list3_market_picks);
@@ -1886,39 +2638,113 @@ async function loadOpportunities() {{
 
 let _oppsPollTimer = null;
 
-async function runOpportunityScan() {{
-  const btn = document.getElementById('opps-run-btn');
-  btn.disabled = true;
-  document.getElementById('opps-loading').textContent = '⏳ Starting scan…';
-  ['opps-list1','opps-list2','opps-list3'].forEach(id => {{
-    document.getElementById(id).innerHTML = '<div class="opp-loading">⏳ Agents working — bull-officer + risk-officer + portfolio-manager running for all 3 lists in parallel. This takes 5–10 minutes…</div>';
-  }});
-  try {{
-    const res  = await fetch(`${{SERVER}}/opportunities/run`, {{
-      method: 'POST',
-      headers: {{'Content-Type':'application/json'}},
-      body: JSON.stringify({{ cash_ils: 120000 }})
-    }});
-    const data = await res.json();
-    if (data.error) {{
-      document.getElementById('opps-loading').textContent = 'Error: ' + data.error;
-      btn.disabled = false;
-      return;
-    }}
-    // Start polling
-    document.getElementById('opps-loading').textContent = '⏳ Scan running in background…';
-    _startOppsPoll(btn);
-  }} catch(e) {{
-    document.getElementById('opps-loading').textContent = 'Failed: ' + e.message;
-    btn.disabled = false;
-  }}
-}}
-
+// Map the partial-file `_status` value to which list is *currently* in-flight.
+// Anything not currently in-flight is either DONE (we've already rendered picks)
+// or QUEUED (we leave the slot empty per user spec — no premature placeholder).
+const LIST_KEYS = ['list1_portfolio_fit', 'list2_profile_fit', 'list3_market_picks'];
+const LIST_DOM  = {{
+  list1_portfolio_fit: 'opps-list1',
+  list2_profile_fit:   'opps-list2',
+  list3_market_picks:  'opps-list3',
+}};
+const LIST_TITLE = {{
+  list1_portfolio_fit: 'List 1 — Portfolio Fit',
+  list2_profile_fit:   'List 2 — Profile Fit',
+  list3_market_picks:  'List 3 — Market Picks',
+}};
 const LIST_LABELS = {{
   'running:list1_portfolio_fit': '📊 Running List 1 — Portfolio Fit…',
   'running:list2_profile_fit':   '👤 Running List 2 — Profile Fit (List 1 done)…',
   'running:list3_market_picks':  '🌍 Running List 3 — Market Picks (Lists 1–2 done)…',
 }};
+
+function _parseCurrentList(current) {{
+  // current is "phase1:list2_profile_fit" or "running:list2_profile_fit" or "running"
+  if (!current) return null;
+  for (const k of LIST_KEYS) {{
+    if (current.endsWith(k)) return k;
+  }}
+  return null;
+}}
+
+function _renderListSlot(listKey, partialData, currentlyRunning) {{
+  // Three states per slot:
+  //   DONE     → render the picks
+  //   RUNNING  → show "⏳ Running List N…"
+  //   QUEUED   → empty (no placeholder)
+  const el = document.getElementById(LIST_DOM[listKey]);
+  if (!el) return;
+  const items = partialData?.[listKey] || [];
+  if (items.length > 0) {{
+    renderOppList(LIST_DOM[listKey], items);
+    return;
+  }}
+  if (listKey === currentlyRunning) {{
+    el.innerHTML = `<div class="opp-loading">⏳ Running ${{LIST_TITLE[listKey]}}… (agents working — typically 2–4 minutes per list)</div>`;
+    return;
+  }}
+  // Queued — leave the slot empty per user request (no premature placeholder).
+  el.innerHTML = '';
+}}
+
+async function runOpportunityScan() {{
+  const btn = document.getElementById('opps-run-btn');
+  // Lock the button for the entire scan. Re-enable only on a terminal status.
+  btn.disabled = true;
+  btn.dataset.origLabel = btn.dataset.origLabel || btn.textContent;
+  btn.textContent = '⏳ Running…';
+  document.getElementById('opps-loading').textContent = '⏳ Starting scan…';
+  // Show "Queued" placeholders immediately so the click has visible feedback
+  // (the 15-second gap before the first poll tick used to look like the page
+  // just refreshed and cleared itself).
+  LIST_KEYS.forEach(k => {{
+    const el = document.getElementById(LIST_DOM[k]);
+    if (el) el.innerHTML = '<div class="opp-loading">⏳ Queued — waiting for agent to start…</div>';
+  }});
+  // Resolve cash from the Cash Ready card (omit field so the server can fall
+  // back to positions.json.cash_ready_usd × FX, which mirrors the scanner CLI).
+  let body = {{}};
+  try {{
+    const cr = await fetch(`${{SERVER}}/cash-ready`);
+    const cd = await cr.json();
+    if (cd && cd.amount_ils) {{
+      body.cash_ils = Math.round(cd.amount_ils);
+    }}
+  }} catch(e) {{ /* leave body empty → server defaults */ }}
+  try {{
+    const res  = await fetch(`${{SERVER}}/opportunities/run`, {{
+      method: 'POST',
+      headers: {{'Content-Type':'application/json'}},
+      body: JSON.stringify(body)
+    }});
+    const data = await res.json();
+    if (data.error) {{
+      document.getElementById('opps-loading').textContent = 'Error: ' + data.error;
+      _resetOppsButton(btn);
+      return;
+    }}
+    if (data.started === false) {{
+      document.getElementById('opps-loading').textContent =
+        '⚠ ' + (data.message || 'Scan already running — picking up existing run.');
+    }} else {{
+      const cashNote = body.cash_ils
+        ? ` (cash ₪${{body.cash_ils.toLocaleString()}})`
+        : ' (cash: server default)';
+      document.getElementById('opps-loading').innerHTML =
+        `⏳ Scan running in background${{cashNote}} — Phase 1 ~2 min, then Phase 2 bull/risk/manager on ~30 tickers (~20–40 min total)…`;
+    }}
+    _startOppsPoll(btn);
+  }} catch(e) {{
+    document.getElementById('opps-loading').textContent = 'Failed: ' + e.message;
+    _resetOppsButton(btn);
+  }}
+}}
+
+function _resetOppsButton(btn) {{
+  if (!btn) return;
+  btn.disabled = false;
+  btn.textContent = btn.dataset.origLabel || '▶ Run New Scan';
+}}
 
 function _startOppsPoll(btn) {{
   if (_oppsPollTimer) clearInterval(_oppsPollTimer);
@@ -1932,14 +2758,14 @@ function _startOppsPoll(btn) {{
         const label = LIST_LABELS[data.current] || '⏳ Scan running…';
         document.getElementById('opps-loading').textContent =
           `${{label}} (${{elapsed}}s elapsed)`;
-        // Load partial results so completed lists appear immediately
+        // Per-list rendering: only paint slots that are DONE or actively RUNNING.
+        // Queued lists stay empty until their turn arrives.
         try {{
           const pr = await fetch(`${{SERVER}}/opportunities/partial`);
           const pd = await pr.json();
           if (!pd.error) {{
-            if (pd.list1_portfolio_fit?.length) renderOppList('opps-list1', pd.list1_portfolio_fit);
-            if (pd.list2_profile_fit?.length)   renderOppList('opps-list2', pd.list2_profile_fit);
-            if (pd.list3_market_picks?.length)  renderOppList('opps-list3', pd.list3_market_picks);
+            const currentlyRunning = _parseCurrentList(data.current);
+            LIST_KEYS.forEach(k => _renderListSlot(k, pd, currentlyRunning));
           }}
         }} catch(e) {{}}
       }} else if (data.status === 'done') {{
@@ -1947,10 +2773,159 @@ function _startOppsPoll(btn) {{
         document.getElementById('opps-loading').textContent = '✓ Done — loading results…';
         await loadOpportunities();
         document.getElementById('opps-loading').textContent = '';
-        if (btn) btn.disabled = false;
+        _resetOppsButton(btn);
+      }} else if (data.status === 'partial_failure') {{
+        clearInterval(_oppsPollTimer);
+        const failed = (data.failed_lists || []).join(', ');
+        document.getElementById('opps-loading').innerHTML =
+          `<span style="color:{ACCENT_RED}">⚠ Scan completed with failures: ${{failed}}.</span> ` +
+          `Loading partial results… Debug log: <code>${{data.scan_debug_log || ''}}</code>`;
+        await loadOpportunities();
+        _resetOppsButton(btn);
       }}
     }} catch(e) {{ /* server momentarily busy, keep polling */ }}
   }}, 15000);  // poll every 15 seconds
+}}
+
+// ================================================================ FILTERED TAB (unfiltered scan)
+async function loadUnfiltered() {{
+  document.getElementById('unf-loading').textContent = '⏳ Loading…';
+  try {{
+    const sr = await fetch(`${{SERVER}}/opportunities-unfiltered/status`);
+    const sd = await sr.json();
+    if (sd.status === 'running') {{
+      const btn = document.getElementById('unf-run-btn');
+      if (btn && !btn.disabled) {{
+        btn.disabled = true;
+        btn.dataset.origLabel = btn.dataset.origLabel || btn.textContent;
+        btn.textContent = '⏳ Running…';
+      }}
+      ['unf-list1','unf-list2','unf-list3'].forEach(id => {{
+        const el = document.getElementById(id);
+        if (el) el.innerHTML = '<div class="opp-loading">⏳ Scan in progress…</div>';
+      }});
+      _startUnfilteredPoll(btn);
+      return;
+    }}
+  }} catch(e) {{}}
+
+  try {{
+    const res  = await fetch(`${{SERVER}}/opportunities-unfiltered`);
+    const data = await res.json();
+    if (data.error) {{
+      document.getElementById('unf-loading').textContent = 'No scan data yet — click ▶ Run No-Filter Scan.';
+      ['unf-list1','unf-list2','unf-list3'].forEach(id => {{
+        const el = document.getElementById(id);
+        if (el) el.innerHTML = '<div class="opp-loading">No data — run a no-filter scan first.</div>';
+      }});
+      return;
+    }}
+    document.getElementById('unf-date').textContent = data.date ? 'Last scan: ' + data.date : '';
+    _renderUnfilteredUniverse(data._universe_quality, data._excluded_from_main);
+    renderOppList('unf-list1', data.list1_portfolio_fit);
+    renderOppList('unf-list2', data.list2_profile_fit);
+    renderOppList('unf-list3', data.list3_market_picks);
+    document.getElementById('unf-loading').textContent = '';
+  }} catch(e) {{
+    document.getElementById('unf-loading').textContent = 'No scan data yet — click ▶ Run No-Filter Scan.';
+  }}
+}}
+
+function _renderUnfilteredUniverse(uq, excluded) {{
+  const el = document.getElementById('unf-universe');
+  if (!el) return;
+  if (!uq) {{ el.style.display = 'none'; return; }}
+  const parabolic = (uq.parabolic_included || []).join(', ') || '(none)';
+  const exCount   = (excluded || []).length;
+  el.style.display = 'block';
+  el.innerHTML =
+    `<strong style="color:#aaa;">📡 Unfiltered universe</strong> — `
+    + `<span style="color:#66cc99;">${{uq.clean_count || 0}} clean</span> · `
+    + `<span style="color:#ffd699;">${{uq.extended_count || 0}} extended</span> · `
+    + `<span style="color:#ff9999;">${{(uq.parabolic_included || []).length}} parabolic INCLUDED</span>`
+    + ` <span style="color:#666;">(${{uq.data_as_of || 'n/a'}})</span>`
+    + `<div style="margin-top:6px;color:#888;">Parabolic names eligible here: `
+    + `<span style="color:#ff9999;">${{parabolic}}</span></div>`
+    + `<div style="margin-top:4px;color:#888;">Excluding ${{exCount}} tickers already in 💡 Opportunities.</div>`;
+}}
+
+async function runUnfilteredScan() {{
+  const btn = document.getElementById('unf-run-btn');
+  btn.disabled = true;
+  btn.dataset.origLabel = btn.dataset.origLabel || btn.textContent;
+  btn.textContent = '⏳ Running…';
+  document.getElementById('unf-loading').textContent = '⏳ Starting no-filter scan…';
+  ['unf-list1','unf-list2','unf-list3'].forEach(id => {{
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = '<div class="opp-loading">⏳ Queued — waiting for agent to start…</div>';
+  }});
+  let body = {{}};
+  try {{
+    const cr = await fetch(`${{SERVER}}/cash-ready`);
+    const cd = await cr.json();
+    if (cd && cd.amount_ils) body.cash_ils = Math.round(cd.amount_ils);
+  }} catch(e) {{}}
+  try {{
+    const res  = await fetch(`${{SERVER}}/opportunities-unfiltered/run`, {{
+      method: 'POST',
+      headers: {{'Content-Type':'application/json'}},
+      body: JSON.stringify(body),
+    }});
+    const data = await res.json();
+    if (data.error) {{
+      document.getElementById('unf-loading').textContent = 'Error: ' + data.error;
+      _resetUnfilteredButton(btn);
+      return;
+    }}
+    if (data.started === false) {{
+      document.getElementById('unf-loading').textContent =
+        '⚠ ' + (data.message || 'Scan already running.');
+    }} else {{
+      const cashNote = body.cash_ils
+        ? ` (cash ₪${{body.cash_ils.toLocaleString()}})`
+        : ' (cash: server default)';
+      document.getElementById('unf-loading').textContent =
+        '⏳ No-filter scan running' + cashNote + ' — 5 picks per list, no parabolic gate (~5–10 min)…';
+    }}
+    _startUnfilteredPoll(btn);
+  }} catch(e) {{
+    document.getElementById('unf-loading').textContent = 'Failed: ' + e.message;
+    _resetUnfilteredButton(btn);
+  }}
+}}
+
+function _resetUnfilteredButton(btn) {{
+  if (!btn) return;
+  btn.disabled = false;
+  btn.textContent = btn.dataset.origLabel || '▶ Run No-Filter Scan';
+}}
+
+let _unfPollTimer = null;
+function _startUnfilteredPoll(btn) {{
+  if (_unfPollTimer) clearInterval(_unfPollTimer);
+  let elapsed = 0;
+  _unfPollTimer = setInterval(async () => {{
+    elapsed += 15;
+    try {{
+      const r  = await fetch(`${{SERVER}}/opportunities-unfiltered/status`);
+      const d  = await r.json();
+      if (d.status === 'running') {{
+        document.getElementById('unf-loading').textContent =
+          `⏳ No-filter scan running… (${{elapsed}}s elapsed)`;
+      }} else if (d.status === 'done') {{
+        clearInterval(_unfPollTimer);
+        document.getElementById('unf-loading').textContent = '✓ Done — loading results…';
+        await loadUnfiltered();
+        document.getElementById('unf-loading').textContent = '';
+        _resetUnfilteredButton(btn);
+      }} else if (d.status === 'error') {{
+        clearInterval(_unfPollTimer);
+        document.getElementById('unf-loading').innerHTML =
+          `<span style="color:{ACCENT_RED}">⚠ Scan failed: ${{d.error || 'unknown'}}</span>`;
+        _resetUnfilteredButton(btn);
+      }}
+    }} catch(e) {{}}
+  }}, 15000);
 }}
 
 function _renderDeepResult(data) {{
@@ -2070,6 +3045,15 @@ document.addEventListener('DOMContentLoaded', () => {{
 class _Handler(BaseHTTPRequestHandler):
     positions: list[dict] = []
     _scan_running: bool = False
+    _report_running: bool = False
+    _report_started_at: str = ""
+    _report_last_error: str = ""
+    _improve_running: bool = False
+    _improve_started_at: str = ""
+    _improve_last_error: str = ""
+    _unfiltered_running: bool = False
+    _unfiltered_started_at: str = ""
+    _unfiltered_last_error: str = ""
 
     def log_message(self, fmt, *args):
         pass
@@ -2110,6 +3094,9 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json({"error": "symbol parameter required"}, 400)
                 return
             try:
+                # Reload positions on each request so cost-basis lookups reflect
+                # the latest portfolio-update trades.
+                _Handler.positions = _load_positions()
                 payload = build_ticker_payload(symbol, _Handler.positions, period)
                 self._send_json(payload)
             except Exception as e:
@@ -2118,8 +3105,19 @@ class _Handler(BaseHTTPRequestHandler):
 
         if parsed.path == "/portfolio":
             try:
+                # Reload positions.json on every request so trades recorded via
+                # portfolio-update (which modifies the file on disk) are visible
+                # without needing to restart the dashboard server.
+                _Handler.positions = _load_positions()
                 payload = build_portfolio_payload(_Handler.positions)
                 self._send_json(payload)
+            except Exception as e:
+                self._send_json({"error": str(e)}, 500)
+            return
+
+        if parsed.path == "/cash-ready":
+            try:
+                self._send_json(_cash_ready_payload())
             except Exception as e:
                 self._send_json({"error": str(e)}, 500)
             return
@@ -2153,6 +3151,55 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json({"error": str(e)}, 500)
             return
 
+        if parsed.path == "/opportunities-unfiltered":
+            try:
+                dirs = sorted(REPORT_DIR.iterdir(), reverse=True) if REPORT_DIR.exists() else []
+                unf_path = None
+                for d in dirs:
+                    p = d / "opportunities-unfiltered.json"
+                    if not p.exists():
+                        continue
+                    # Skip partial/running files — fall through to the last completed scan
+                    try:
+                        status = json.loads(p.read_text()).get("_status", "")
+                        if status in ("running",) or status.startswith("phase1:"):
+                            continue
+                    except Exception:
+                        continue
+                    unf_path = p
+                    break
+                if unf_path:
+                    self._send_json(json.loads(unf_path.read_text()))
+                else:
+                    self._send_json({"error": "No unfiltered scan yet."})
+            except Exception as e:
+                self._send_json({"error": str(e)}, 500)
+            return
+
+        if parsed.path == "/opportunities-unfiltered/status":
+            today    = dt.date.today().isoformat()
+            unf_path = REPORT_DIR / today / "opportunities-unfiltered.json"
+            if _Handler._unfiltered_running:
+                self._send_json({"status": "running",
+                                 "started_at": _Handler._unfiltered_started_at})
+            elif _Handler._unfiltered_last_error:
+                self._send_json({"status": "error",
+                                 "error": _Handler._unfiltered_last_error})
+            elif unf_path.exists():
+                # Only report "done" if the file is actually complete
+                try:
+                    file_status = json.loads(unf_path.read_text()).get("_status", "")
+                    if file_status == "done" or file_status == "done:phase1_only":
+                        self._send_json({"status": "done"})
+                    else:
+                        # Partial file on disk (crashed or interrupted) — treat as idle
+                        self._send_json({"status": "idle"})
+                except Exception:
+                    self._send_json({"status": "idle"})
+            else:
+                self._send_json({"status": "idle"})
+            return
+
         if parsed.path == "/report":
             try:
                 md = _latest_report_md()
@@ -2163,6 +3210,79 @@ class _Handler(BaseHTTPRequestHandler):
                     self._send_json({"html": html, "date": date})
                 else:
                     self._send_json({"error": "No report found. Run the daily report first."})
+            except Exception as e:
+                self._send_json({"error": str(e)}, 500)
+            return
+
+        if parsed.path == "/report/status":
+            today = dt.date.today().isoformat()
+            today_report = REPORT_DIR / today / "report.md"
+            if _Handler._report_running:
+                self._send_json({
+                    "status": "running",
+                    "started_at": _Handler._report_started_at,
+                })
+            elif today_report.exists() and today_report.stat().st_size > 0:
+                self._send_json({
+                    "status": "done",
+                    "date": today,
+                    "error": _Handler._report_last_error or None,
+                })
+            elif _Handler._report_last_error:
+                # Subprocess ran but no report.md was produced — surface the captured error
+                # rather than going silently back to "idle".
+                self._send_json({
+                    "status": "error",
+                    "error": _Handler._report_last_error,
+                })
+            else:
+                self._send_json({
+                    "status": "idle",
+                    "error": None,
+                })
+            return
+
+        if parsed.path == "/report/improve/status":
+            today = dt.date.today().isoformat()
+            improvements = REPORT_DIR / today / "report-improvements.json"
+            if _Handler._improve_running:
+                self._send_json({
+                    "status": "running",
+                    "started_at": _Handler._improve_started_at,
+                })
+            elif improvements.exists() and improvements.stat().st_size > 0:
+                self._send_json({
+                    "status": "done",
+                    "date": today,
+                    "error": _Handler._improve_last_error or None,
+                })
+            elif _Handler._improve_last_error:
+                self._send_json({
+                    "status": "error",
+                    "error": _Handler._improve_last_error,
+                })
+            else:
+                self._send_json({"status": "idle", "error": None})
+            return
+
+        if parsed.path == "/report/improve/result":
+            try:
+                # Find the most recent report-improvements.json (today preferred, else newest)
+                dirs = sorted(REPORT_DIR.iterdir(), reverse=True) if REPORT_DIR.exists() else []
+                found = None
+                for d in dirs:
+                    if not d.is_dir():
+                        continue
+                    p = d / "report-improvements.json"
+                    if p.exists() and p.stat().st_size > 0:
+                        found = p
+                        break
+                if not found:
+                    self._send_json({"error": "No improvement proposals yet. Click ✨ Suggest improvements."})
+                    return
+                data = json.loads(found.read_text())
+                data["_source_path"] = str(found.relative_to(ROOT))
+                self._send_json(data)
             except Exception as e:
                 self._send_json({"error": str(e)}, 500)
             return
@@ -2182,7 +3302,36 @@ class _Handler(BaseHTTPRequestHandler):
                         pass
                 self._send_json({"status": "running", "current": current})
             elif opp_path.exists():
-                self._send_json({"status": "done"})
+                # Don't blindly report "done" — if any list contains only error sentinels
+                # (PARSE_ERROR / TIMEOUT / ERROR) the scan silently failed for that list.
+                # Surface it so the UI doesn't paint a green check on a broken scan.
+                failed_lists: list[str] = []
+                try:
+                    data = json.loads(opp_path.read_text())
+                    for k in ("list1_portfolio_fit", "list2_profile_fit", "list3_market_picks"):
+                        items = data.get(k, [])
+                        if not items:
+                            failed_lists.append(f"{k}:empty")
+                            continue
+                        error_tickers = {"ERROR", "TIMEOUT", "PARSE_ERROR"}
+                        real_picks = [
+                            i for i in items
+                            if (i.get("ticker") or "").upper() not in error_tickers
+                        ]
+                        if not real_picks:
+                            # Surface the first sentinel's reason if available.
+                            why = items[0].get("error") or items[0].get("ticker") or "unknown"
+                            failed_lists.append(f"{k}:{why}")
+                except Exception as e:
+                    failed_lists.append(f"parse:{e}")
+                if failed_lists:
+                    self._send_json({
+                        "status": "partial_failure",
+                        "failed_lists": failed_lists,
+                        "scan_debug_log": str((REPORT_DIR / today / "scan-debug.log").relative_to(ROOT)),
+                    })
+                else:
+                    self._send_json({"status": "done"})
             else:
                 self._send_json({"status": "idle"})
             return
@@ -2222,6 +3371,26 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json({"error": str(e)}, 500)
             return
 
+        if parsed.path == "/cash-ready":
+            try:
+                body    = self._read_body()
+                payload = json.loads(body) if body else {}
+                raw     = payload.get("amount_usd")
+                if raw is None or raw == "":
+                    _save_cash_ready(None)
+                else:
+                    amount = float(raw)
+                    if amount < 0:
+                        self._send_json({"error": "amount must be >= 0"}, 400)
+                        return
+                    _save_cash_ready(amount)
+                self._send_json(_cash_ready_payload())
+            except (ValueError, TypeError) as e:
+                self._send_json({"error": f"invalid amount: {e}"}, 400)
+            except Exception as e:
+                self._send_json({"error": str(e)}, 500)
+            return
+
         if parsed.path == "/chat":
             try:
                 body     = self._read_body()
@@ -2240,21 +3409,32 @@ class _Handler(BaseHTTPRequestHandler):
             try:
                 body     = self._read_body()
                 params   = json.loads(body) if body else {}
-                cash_ils = int(params.get("cash_ils", 120000))
+                # If the caller omits cash_ils, let scan.py auto-resolve it from
+                # positions.json.cash_ready_usd × FX. Only pass cash_ils when the
+                # caller explicitly sent it.
+                cash_ils = int(params["cash_ils"]) if "cash_ils" in params else None
                 # Start background scan, return immediately
                 if _Handler._scan_running:
                     self._send_json({"started": False, "message": "Scan already running"})
                     return
                 _Handler._scan_running = True
+                # Allow the caller to opt back into the fast Phase-1-only path.
+                # Default is the full pipeline (Phase 1 + Phase 2 deep analysis).
+                phase1_only = bool(params.get("phase1_only", False))
                 def _bg_scan():
                     try:
                         today = dt.date.today().isoformat()
-                        scan_input = json.dumps({"cash_ils": cash_ils, "date": today})
+                        scan_payload = {"date": today, "phase1_only": phase1_only}
+                        if cash_ils is not None:
+                            scan_payload["cash_ils"] = cash_ils
+                        scan_input = json.dumps(scan_payload)
+                        # Phase 2 runs the bull/risk/manager triad on ~30 tickers
+                        # in batches of 3 → up to ~40 min wall-time. Give it 60.
                         proc = subprocess.run(
                             ["python3",
                              str(ROOT / ".claude/skills/opportunity-scanner/scripts/scan.py")],
                             input=scan_input, capture_output=True, text=True,
-                            timeout=900, cwd=str(ROOT),
+                            timeout=3600, cwd=str(ROOT),
                         )
                         if proc.stdout.strip():
                             # scan.py already wrote the file; parse to validate
@@ -2267,6 +3447,186 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json({"started": True, "message": "Scan started in background"})
             except Exception as e:
                 _Handler._scan_running = False
+                self._send_json({"error": str(e)}, 500)
+            return
+
+        if parsed.path == "/opportunities-unfiltered/run":
+            try:
+                body     = self._read_body()
+                params   = json.loads(body) if body else {}
+                cash_ils = int(params["cash_ils"]) if "cash_ils" in params else None
+                if _Handler._unfiltered_running:
+                    self._send_json({"started": False, "message": "Unfiltered scan already running"})
+                    return
+                _Handler._unfiltered_running   = True
+                _Handler._unfiltered_started_at = dt.datetime.now().isoformat(timespec="seconds")
+                _Handler._unfiltered_last_error = ""
+
+                def _bg_unf():
+                    try:
+                        today = dt.date.today().isoformat()
+                        payload = {"date": today}
+                        if cash_ils is not None:
+                            payload["cash_ils"] = cash_ils
+                        proc = subprocess.run(
+                            ["python3",
+                             str(ROOT / ".claude/skills/opportunity-scanner/scripts/scan_unfiltered.py")],
+                            input=json.dumps(payload), capture_output=True, text=True,
+                            timeout=1800, cwd=str(ROOT),
+                        )
+                        if proc.returncode != 0:
+                            _Handler._unfiltered_last_error = (
+                                f"exit {proc.returncode}: "
+                                + (proc.stderr or proc.stdout or "no output")
+                            )[:1000]
+                        elif proc.stdout.strip():
+                            json.loads(proc.stdout.strip())  # validate
+                    except subprocess.TimeoutExpired:
+                        _Handler._unfiltered_last_error = "Unfiltered scan timed out after 30 min"
+                    except Exception as e:
+                        _Handler._unfiltered_last_error = str(e)
+                    finally:
+                        _Handler._unfiltered_running = False
+
+                threading.Thread(target=_bg_unf, daemon=True).start()
+                self._send_json({"started": True, "message": "Unfiltered scan started"})
+            except Exception as e:
+                _Handler._unfiltered_running = False
+                self._send_json({"error": str(e)}, 500)
+            return
+
+        if parsed.path == "/report/run":
+            try:
+                if _Handler._report_running:
+                    self._send_json({"started": False, "message": "Report already running"})
+                    return
+                _Handler._report_running = True
+                _Handler._report_started_at = dt.datetime.now().isoformat(timespec="seconds")
+                # Clear any stale error from a previous run before starting fresh.
+                _Handler._report_last_error = ""
+                # If today's report already exists from a prior run, move it aside so the
+                # new run is observable — otherwise stale-success would mask a fresh failure.
+                today_str = dt.date.today().isoformat()
+                stale     = REPORT_DIR / today_str / "report.md"
+                if stale.exists():
+                    try:
+                        stale.rename(stale.with_name(
+                            f"report.prev-{dt.datetime.now().strftime('%H%M%S')}.md"
+                        ))
+                    except Exception:
+                        pass
+
+                def _bg_report():
+                    today_str    = dt.date.today().isoformat()
+                    expected_md  = REPORT_DIR / today_str / "report.md"
+                    # Tee subprocess stdout/stderr to a log file so the user can inspect
+                    # what the agent actually did when something goes wrong.
+                    log_dir      = REPORT_DIR / today_str
+                    log_dir.mkdir(parents=True, exist_ok=True)
+                    run_log      = log_dir / "daily-report-run.log"
+                    try:
+                        cmd = ["claude", "--dangerously-skip-permissions",
+                               "-p", "/daily-report",
+                               "--allowedTools", "Read,Write,Edit,Bash,Glob,Grep,Task,WebSearch,WebFetch"]
+                        proc = subprocess.run(
+                            cmd, capture_output=True, text=True,
+                            timeout=1800, cwd=str(ROOT),
+                        )
+                        try:
+                            run_log.write_text(
+                                f"# /daily-report run @ {dt.datetime.now().isoformat(timespec='seconds')}\n"
+                                f"## returncode\n{proc.returncode}\n\n"
+                                f"## stderr\n{proc.stderr}\n\n"
+                                f"## stdout (last 4000 chars)\n{proc.stdout[-4000:]}\n"
+                            )
+                        except Exception:
+                            pass
+                        if proc.returncode != 0:
+                            _Handler._report_last_error = (
+                                f"exit {proc.returncode}: "
+                                + (proc.stderr or proc.stdout or "no output")
+                            )[:1000]
+                            return
+                        # The agent claimed success but no report.md was produced — this is
+                        # the silent-failure mode we used to swallow. Surface it loudly.
+                        if not (expected_md.exists() and expected_md.stat().st_size > 0):
+                            _Handler._report_last_error = (
+                                "Agent finished with exit 0 but did not write "
+                                f"{expected_md.relative_to(ROOT)}. "
+                                f"Check {run_log.relative_to(ROOT)} for what the agent did."
+                            )
+                    except subprocess.TimeoutExpired:
+                        _Handler._report_last_error = "Report generation timed out after 30 min"
+                    except FileNotFoundError:
+                        _Handler._report_last_error = "claude CLI not found in PATH"
+                    except Exception as e:
+                        _Handler._report_last_error = str(e)
+                    finally:
+                        _Handler._report_running = False
+
+                threading.Thread(target=_bg_report, daemon=True).start()
+                self._send_json({"started": True, "message": "Report generation started"})
+            except Exception as e:
+                _Handler._report_running = False
+                self._send_json({"error": str(e)}, 500)
+            return
+
+        if parsed.path == "/report/improve/run":
+            try:
+                if _Handler._improve_running:
+                    self._send_json({"started": False, "message": "Improvement chain already running"})
+                    return
+                _Handler._improve_running = True
+                _Handler._improve_started_at = dt.datetime.now().isoformat(timespec="seconds")
+                _Handler._improve_last_error = ""
+
+                def _bg_improve():
+                    today_str = dt.date.today().isoformat()
+                    log_dir   = REPORT_DIR / today_str
+                    log_dir.mkdir(parents=True, exist_ok=True)
+                    run_log   = log_dir / "improve-report-run.log"
+                    expected  = log_dir / "report-improvements.json"
+                    try:
+                        cmd = ["claude", "--dangerously-skip-permissions",
+                               "-p", "/improve-report",
+                               "--allowedTools", "Read,Write,Bash,Glob,Grep,Task"]
+                        proc = subprocess.run(
+                            cmd, capture_output=True, text=True,
+                            timeout=1800, cwd=str(ROOT),
+                        )
+                        try:
+                            run_log.write_text(
+                                f"# /improve-report run @ {dt.datetime.now().isoformat(timespec='seconds')}\n"
+                                f"## returncode\n{proc.returncode}\n\n"
+                                f"## stderr\n{proc.stderr}\n\n"
+                                f"## stdout (last 4000 chars)\n{proc.stdout[-4000:]}\n"
+                            )
+                        except Exception:
+                            pass
+                        if proc.returncode != 0:
+                            _Handler._improve_last_error = (
+                                f"exit {proc.returncode}: "
+                                + (proc.stderr or proc.stdout or "no output")
+                            )[:1000]
+                            return
+                        if not (expected.exists() and expected.stat().st_size > 0):
+                            _Handler._improve_last_error = (
+                                "Agent reported success but report-improvements.json "
+                                f"was not written to {expected}. See {run_log} for details."
+                            )
+                    except subprocess.TimeoutExpired:
+                        _Handler._improve_last_error = "improve-report timed out after 30 min"
+                    except FileNotFoundError:
+                        _Handler._improve_last_error = "claude CLI not found in PATH"
+                    except Exception as e:
+                        _Handler._improve_last_error = str(e)
+                    finally:
+                        _Handler._improve_running = False
+
+                threading.Thread(target=_bg_improve, daemon=True).start()
+                self._send_json({"started": True, "message": "Improvement chain started"})
+            except Exception as e:
+                _Handler._improve_running = False
                 self._send_json({"error": str(e)}, 500)
             return
 

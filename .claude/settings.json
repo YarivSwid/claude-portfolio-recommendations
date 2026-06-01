@@ -13,14 +13,14 @@
       "Bash(chmod:*)",
       "WebSearch",
       "WebFetch",
-      "Edit(.claude/skills/charts/scripts/dashboard.py:*)"
+      "Edit(.claude/skills/charts/scripts/dashboard.py)"
     ],
     "deny": [
       "Bash(git push:*)",
       "Bash(rm -rf:*)",
-      "Bash(curl:* -X POST*)",
-      "Bash(curl:* -X PUT*)",
-      "Bash(curl:* -X DELETE*)"
+      "Bash(curl * -X POST*)",
+      "Bash(curl * -X PUT*)",
+      "Bash(curl * -X DELETE*)"
     ]
   },
   "hooks": {
@@ -83,6 +83,10 @@
           {
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/enforce_momentum_guardrail.py\""
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/enforce_stop_signal_separation.py\""
           },
           {
             "type": "command",
