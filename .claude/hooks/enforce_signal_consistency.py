@@ -28,18 +28,29 @@ import sys
 from pathlib import Path
 from datetime import date, timedelta
 
-TICKER_RE = re.compile(r"\b(?:IL\d{7}|HRL\.[A-Z0-9]+|[A-Z]{1,5}(?:[./-][A-Z]{1,3})?)\b")
-_EXCLUDE = {
-    "BUY", "SELL", "HOLD", "KEEP", "ADD", "TRIM", "EXIT", "FLAG",
-    "REDUCE", "AVOID", "SKIP", "WATCH",
-    "NAV", "USD", "ILS", "FX", "IL", "EU", "US", "UK", "AI",
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from lib.signal_patterns import TICKER_RE, TICKER_BLACKLIST  # noqa: E402
+from _log import emit, emit_error  # noqa: E402
+
+HOOK_NAME = "enforce_signal_consistency"
+
+# Canonical signal vocabulary lives in scripts/lib/signal_patterns. We extend
+# the ticker blacklist with a few cross-section-only false positives that
+# don't belong in the global module (sub-table headers, risk-rating tokens).
+_EXCLUDE = set(TICKER_BLACKLIST) | {
     "T", "T1", "T2", "T3",
-    "GT", "ATF", "TA", "ETF", "CC", "YoY", "QoQ",
-    "MED", "HIGH", "LOW", "RISK",
+    "GT", "ATF", "MED", "HIGH", "LOW", "RISK",
     "Q1", "Q2", "Q3", "Q4",
 }
+# Row-level signal token matcher — the full vocabulary including REDUCE and
+# STRONG BUY so cross-section consistency checks see the same set of tokens
+# the persistence/firewall hooks see.
 ROW_SIG_RE = re.compile(
-    r"\b(BUY|SELL|HOLD|KEEP|ADD|TRIM|EXIT|FLAG)\b", re.IGNORECASE
+    r"\b(STRONG[\s_]BUY|BUY|SELL|HOLD|KEEP|ADD|TRIM|CUT|EXIT|REDUCE|AVOID|WATCH|FLAG)\b",
+    re.IGNORECASE,
 )
 
 
@@ -144,11 +155,13 @@ def _parse_tables(text):
 def main():
     try:
         payload = json.load(sys.stdin)
-    except Exception:
+    except Exception as e:
+        emit(HOOK_NAME, "skip", reason=f"stdin parse failed: {e}")
         sys.exit(0)
 
     transcript_path = payload.get("transcript_path")
     if not transcript_path or not Path(transcript_path).exists():
+        emit(HOOK_NAME, "skip", reason="no transcript")
         sys.exit(0)
 
     entries = []
@@ -294,11 +307,19 @@ def main():
                 "The portfolio-manager spec defines the coverage + consistency invariants."
             ),
         }
+        emit(HOOK_NAME, "block", reason=f"{len(violations)} consistency violation(s)")
         print(json.dumps(out))
         sys.exit(0)
 
+    emit(HOOK_NAME, "pass")
     sys.exit(0)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except BaseException as _e:
+        emit_error(HOOK_NAME, _e)
+        sys.exit(0)

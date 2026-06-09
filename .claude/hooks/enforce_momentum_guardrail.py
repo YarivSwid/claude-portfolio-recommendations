@@ -2,17 +2,19 @@
 """Stop hook — warn (or block) on BUY/ADD signals for momentum-extended tickers.
 
 When the assistant emits a BUY or ADD signal for a ticker, this hook calls the
-momentum-check skill to see if streak_flag == "extended". If yes, and the
-assistant's output does NOT contain a "MOMENTUM OVERRIDE: <reason>" line,
-the turn gets a warning (or, in blocking mode, is blocked).
+momentum-check skill and reads the `tier` field (normal / yellow / red).
 
-Default mode is "warn" — emits a stderr warning but lets the turn pass.
-Set MOMENTUM_GUARDRAIL_MODE=block in the environment (or edit MODE below)
-once you've watched the warnings for a few runs and are confident the
-thresholds are right.
+Behavior (Option B — labels inform, never silently filter):
+  - Normal: no action.
+  - Yellow: always warn (label exists for visibility). MODE governs nothing here.
+  - Red:    warn in MODE=warn; block in MODE=block. Override via
+            "MOMENTUM OVERRIDE: <reason>" line in the assistant output.
 
-The skill ships with the hook in WARN mode for the first 3+ runs so the
-user can sanity-check the metrics before any blocking behavior kicks in.
+The legacy binary `streak_flag == "extended"` is kept as a backup signal so the
+hook still fires if a downstream change to momentum-check ever drops `tier`.
+
+Set MOMENTUM_GUARDRAIL_MODE=block once the warnings have been validated; ships
+in "warn" mode by default.
 """
 import json
 import os
@@ -24,20 +26,28 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 MOMENTUM_SCRIPT = ROOT / ".claude" / "skills" / "momentum-check" / "scripts" / "momentum.py"
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _log import emit, emit_error  # noqa: E402
+
+HOOK_NAME = "enforce_momentum_guardrail"
+
 MODE = os.environ.get("MOMENTUM_GUARDRAIL_MODE", "warn")  # "warn" | "block"
 
 # Same signal regex family as the other enforcement hooks. Captures BUY / ADD
 # signals from prose or tables. We deliberately do NOT flag SELL / TRIM / HOLD /
 # WATCH — momentum extension only matters for new buying.
+_POSITIVE = r"STRONG[\s_]BUY|BUY|ADD"
+
 BUY_LINE_RE = re.compile(
     r"(?:\*{0,2}\s*(?:signal|recommendation|action|verdict|trade\s*signal)\s*\*{0,2}\s*[:=]\s*\*{0,2}\s*"
-    r"(BUY|ADD|STRONG_BUY)\b"
-    r"|\|\s*\*{2}(BUY|ADD|STRONG_BUY)\*{2}\s*\|)",
+    r"(" + _POSITIVE + r")\b"
+    r"|\|\s*\*{2}(" + _POSITIVE + r")\*{2}\s*\|"
+    r"|\*{2}(" + _POSITIVE + r")\*{2})",
     re.IGNORECASE,
 )
 TICKER_NEAR_BUY_RE = re.compile(
-    r"\b([A-Z]{1,5}(?:[.-][A-Z]{1,3})?)\b.{0,80}?\b(?:BUY|ADD|STRONG_BUY)\b"
-    r"|\b(?:BUY|ADD|STRONG_BUY)\b.{0,400}?\b([A-Z]{1,5}(?:[.-][A-Z]{1,3})?)\b",
+    r"\b([A-Z]{1,5}(?:[.-][A-Z]{1,3})?)\b.{0,80}?\b(?:" + _POSITIVE + r")\b"
+    r"|\b(?:" + _POSITIVE + r")\b.{0,400}?\b([A-Z]{1,5}(?:[.-][A-Z]{1,3})?)\b",
     re.DOTALL,
 )
 OVERRIDE_RE = re.compile(r"MOMENTUM\s+OVERRIDE\s*:", re.IGNORECASE)
@@ -86,55 +96,128 @@ def _check_momentum(tickers: list[str]) -> dict:
         return {}
 
 
+def _load_current_turn_text(transcript_path: str) -> str:
+    """Match the slicing pattern enforce_risk_officer.py uses: collect assistant
+    text blocks from the most recent real user message onward.
+    """
+    entries: list[dict] = []
+    try:
+        with open(transcript_path, "r") as f:
+            for ln in f:
+                ln = ln.strip()
+                if not ln:
+                    continue
+                try:
+                    entries.append(json.loads(ln))
+                except Exception:
+                    continue
+    except Exception:
+        return ""
+
+    last_user_idx = 0
+    for i in range(len(entries) - 1, -1, -1):
+        msg = entries[i].get("message", {}) or {}
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content", [])
+        is_tool_result = False
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    is_tool_result = True
+                    break
+        if not is_tool_result:
+            last_user_idx = i
+            break
+
+    out: list[str] = []
+    for entry in entries[last_user_idx:]:
+        msg = entry.get("message", {}) or {}
+        if msg.get("role") != "assistant":
+            continue
+        for block in msg.get("content", []) or []:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "text":
+                t = block.get("text", "") or ""
+                if t:
+                    out.append(t)
+    return "\n".join(out)
+
+
 def main() -> int:
     try:
         payload = json.loads(sys.stdin.read() or "{}")
-    except Exception:
+    except Exception as e:
+        emit(HOOK_NAME, "skip", reason=f"stdin parse failed: {e}")
         return 0
 
-    transcript = payload.get("transcript") or payload.get("output") or ""
-    if isinstance(transcript, list):
-        transcript = "\n".join(str(p) for p in transcript)
+    transcript_path = payload.get("transcript_path")
+    if not transcript_path or not Path(transcript_path).exists():
+        emit(HOOK_NAME, "skip", reason="no transcript")
+        return 0
+    transcript = _load_current_turn_text(transcript_path)
+    if not transcript:
+        emit(HOOK_NAME, "skip", reason="empty current turn")
+        return 0
 
     if not BUY_LINE_RE.search(transcript):
+        emit(HOOK_NAME, "pass", reason="no BUY/ADD line")
         return 0
 
     if OVERRIDE_RE.search(transcript):
+        emit(HOOK_NAME, "pass", reason="MOMENTUM OVERRIDE present")
         return 0
 
     tickers = _extract_buy_tickers(transcript)
     if not tickers:
+        emit(HOOK_NAME, "pass", reason="no extractable tickers")
         return 0
 
     metrics = _check_momentum(tickers)
-    extended = []
+    yellow: list[tuple] = []
+    red: list[tuple] = []
     for t, m in metrics.items():
         if not m or "error" in m:
             continue
-        if m.get("streak_flag") == "extended":
-            extended.append((t, m.get("flags", []), m.get("rsi_14"),
-                             m.get("pct_vs_200dma"), m.get("consecutive_up_days")))
+        tier = (m.get("tier") or "").lower()
+        legacy_extended = m.get("streak_flag") == "extended"
+        row = (t, m.get("flags", []), m.get("rsi_14"),
+               m.get("pct_vs_200dma"), m.get("consecutive_up_days"), tier or "?")
+        if tier == "red" or (not tier and legacy_extended):
+            red.append(row)
+        elif tier == "yellow":
+            yellow.append(row)
 
-    if not extended:
+    if not yellow and not red:
+        emit(HOOK_NAME, "pass", reason="no extended tickers")
         return 0
 
     msg_lines = ["", "=" * 60,
                  "MOMENTUM GUARDRAIL — extended-rally BUY detected",
                  "=" * 60]
-    for t, flags, rsi, pct200, up_days in extended:
-        rsi_s = f"{rsi:.1f}" if rsi is not None else "?"
-        pct_s = f"{pct200*100:+.1f}%" if pct200 is not None else "?"
-        msg_lines.append(
-            f"  {t}: flags={flags} | RSI(14)={rsi_s} | "
-            f"vs 200DMA={pct_s} | up_streak={up_days}"
-        )
+    for label, group in (("RED", red), ("YELLOW", yellow)):
+        if not group:
+            continue
+        msg_lines.append(f"[{label}]")
+        for t, flags, rsi, pct200, up_days, tier in group:
+            rsi_s = f"{rsi:.1f}" if rsi is not None else "?"
+            pct_s = f"{pct200*100:+.1f}%" if pct200 is not None else "?"
+            msg_lines.append(
+                f"  {t}: tier={tier} | RSI(14)={rsi_s} | "
+                f"vs 200DMA={pct_s} | up_streak={up_days} | flags={flags}"
+            )
     msg_lines.append("")
     msg_lines.append(
-        "These names are momentum-extended (RSI≥75, >30% above 200DMA, "
-        "or 7+ consecutive up days). Buying here means chasing the rally."
+        "Yellow = one criterion extended (RSI 70–79, 20–40% above 200DMA, or 7–10 up-days). "
+        "Manager should already be half-sizing the starter (portfolio-manager spec)."
     )
     msg_lines.append(
-        "If you genuinely want to BUY despite this, add a line to your output:"
+        "Red = severely extended (RSI ≥ 80, >40% above 200DMA, or 11+ up-days). "
+        "Manager should be quarter-sizing the starter or waiting for a pullback."
+    )
+    msg_lines.append(
+        "If you genuinely want to BUY a Red-tier name despite this, add a line to your output:"
     )
     msg_lines.append(
         "  MOMENTUM OVERRIDE: <ticker> — <why this is still the right entry>"
@@ -143,12 +226,21 @@ def main() -> int:
 
     print("\n".join(msg_lines), file=sys.stderr)
 
-    if MODE == "block":
-        # Stop hook returns exit 2 to block the turn (per Claude Code Stop-hook
-        # contract — same convention used by enforce_signal_reversal.py).
+    # Only Red triggers blocking. Yellow is always a warn-only signal.
+    if MODE == "block" and red:
+        red_syms = ",".join(r[0] for r in red)
+        emit(HOOK_NAME, "block", reason=f"red-tier momentum on {red_syms}")
         return 2
+    detail = f"yellow={len(yellow)} red={len(red)} mode={MODE}"
+    emit(HOOK_NAME, "warn", reason=detail)
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except SystemExit:
+        raise
+    except BaseException as _e:
+        emit_error(HOOK_NAME, _e)
+        sys.exit(0)

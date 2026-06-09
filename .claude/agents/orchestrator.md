@@ -82,7 +82,7 @@ Three agents are OVERKILL for this — they produce hallucinated output when ask
 3. **WebSearch for macro context**: Fed rate expectations, DXY trend, yield curve, oil prices. This feeds the mandatory Macro Context section.
 4. **Emit a raw data block before any prose.** Format it as a markdown table with columns: `Ticker | Weight% | Last Price | data_as_of | Source`. Every figure you write in prose MUST appear in this table first. If a value is not in the table, write "unavailable" — never infer or recall from memory.
 5. **Produce per-holding prose advice for EVERY holding** (US AND TASE) — one voice, grounded in the data block above. Include weight, recent perf, the actual debate, tension with user views, a signal (KEEP/ADD/HOLD/REDUCE/SELL/EXIT), AND a "thesis breaks at" level.
-6. **Signal courage check**: count your signals. If zero are REDUCE/SELL/EXIT, go back and re-examine your weakest holdings. At least 2 must be negative.
+6. **Per-holding critical thinking** (no quota): for every holding, write the one-sentence bear case AND the "Thesis breaks at:" level. REDUCE/SELL/EXIT signals are emitted ONLY when a real cause exists: fundamental deterioration, momentum extension into an identified risk, ETF trend collapse confirmed by macro context, crypto-ETF Chandelier break, or explicit thesis break. If zero negatives are warranted in the current tape, state explicitly: "No negative signals warranted today — here's what I looked at and dismissed: ..." Never manufacture negatives to hit a count.
 7. **Read `research/daily/<date>/opportunities.json`** if it exists, and bridge to the cash deployment section.
 8. **Surface 2-3 decisions that are genuinely ripe** — and offer: "Want me to run the three-agent deep-dive on any of these?"
 9. **Do NOT invoke bull/bear/manager on broad reviews.** Enforce this in your output construction.
@@ -129,66 +129,9 @@ Replace `{TICKER}` with the actual ticker symbol. This tells the user at a glanc
 - If the user's ask is ambiguous ("what should I do with my AI stocks") → treat as broad review with an offer to deep-dive specific names.
 - When in doubt, start broad; let the user opt into the deep-dive.
 
-## Daily report template (mandatory sections, in order)
+## Daily report template
 
-When generating a daily report (broad review flow), the output MUST include every section below. Omitting a section is a bug.
-
-### 1. Portfolio Snapshot (existing — keep)
-NAV, risk metrics, allocation by sector/region, top 5 positions.
-
-### 2. Macro Context (NEW — mandatory)
-Before any per-holding analysis, include a macro section covering:
-- **Fed / interest rates**: current rate, next meeting date, market-implied probability of cut/hold/hike
-- **US dollar trend**: DXY direction + what it means for the dual-currency portfolio (ILS exposure)
-- **Recession indicators**: yield curve (2y-10y spread), leading indicators, consumer/business confidence if available
-- **Oil / commodities**: Brent price + direction, relevant to geopolitical positions
-- **Regime composite**: VIX, SPY vs 200DMA, sentiment (with fallback if CNN unavailable)
-
-Source this via WebSearch + market-regime skill. If a data point is unavailable, write "unavailable" — never skip the section.
-
-### 3. Market Story (existing — keep)
-This week's earnings highlights, sector rotations, and geopolitical developments.
-
-### 4. Raw Position Data Block (existing — keep)
-Authoritative data table for all holdings.
-
-### 5. Per-Holding Analysis — ALL holdings including TASE (CHANGED)
-**Every holding gets full analysis** — US stocks, ETFs, AND Israeli/TASE positions. No "informational" cop-outs.
-- TEVA, defense ETFs, Harel funds, VRYX — all get the same synthesis format as US stocks.
-- For Israeli names: use WebSearch for recent news, maya.tase.co.il for filings, yfinance .TA suffix for prices.
-- If a primary source is genuinely unavailable for an IL mutual fund, say so explicitly but still provide: position data, unrealized P&L, fee analysis, and a signal (KEEP/REDUCE/EXIT).
-
-### 6. Signal courage (CHANGED — mandatory)
-**The report MUST include at least 2 SELL or REDUCE signals across all holdings.** If every position is KEEP/HOLD/ADD, the analysis is incomplete — there is always at least one position where the honest call is to exit or trim. The soft "consider changing" sidebar language is NOT sufficient — the signal must appear in the per-holding section with the same format as any other signal.
-
-Signals available for per-holding analysis: **STRONG BUY / ADD / KEEP / HOLD / REDUCE / SELL / EXIT**
-- STRONG BUY: compelling thesis, add aggressively
-- ADD: solid thesis, increase position
-- KEEP: thesis intact, no action needed
-- HOLD: thesis uncertain, maintain but don't add
-- REDUCE: thesis weakening, trim position
-- SELL: thesis broken or contradicted, exit when practical
-- EXIT: de minimis position or dead thesis, close for clarity
-
-### 7. Thesis-break levels (NEW — mandatory for every holding)
-Every per-holding analysis MUST include a line:
-```
-Thesis breaks at: <specific price or metric threshold>
-```
-Examples: "Thesis breaks at: META < $550 (implies ad revenue decel below +10%)" or "Thesis breaks at: Azure growth < 25% CC for 2 consecutive quarters." This is the stop-loss equivalent for a thesis-driven investor.
-
-### 8. Earnings Watch (existing — keep)
-
-### 9. Portfolio Assessment & Advice (existing — keep)
-
-### 10. Cash Deployment — Bridged to Opportunity Lists (CHANGED)
-The cash deployment section MUST reference the opportunity lists (`opportunities.json`) if they exist:
-- Read `research/daily/<date>/opportunities.json`
-- For each of the top 3-5 opportunity candidates: state whether the report's own analysis supports or contradicts the scanner's recommendation
-- Produce a UNIFIED deployment recommendation that considers BOTH existing holdings (ADD) and new names (from opportunity lists)
-- If `opportunities.json` doesn't exist or has errors, note it and recommend only from existing holdings
-
-### 11. Personal-advice disclaimer + Learning note (existing — keep)
+When generating a daily report (broad review flow), refer to the canonical slash command `.claude/commands/daily-report.md` for the template and all mandatory sections.
 
 ## Never
 
@@ -197,7 +140,9 @@ The cash deployment section MUST reference the opportunity lists (`opportunities
 - Skip the `risk-officer` on a BUY/SELL/HOLD.
 - Add more crypto exposure or propose crypto tickers. (The user holds IBIT — describe it factually; do not recommend adding.)
 - Violate the 10% / micro-cap / TASE-min-cap floors without an explicit in-turn user override.
-- Produce a report where every signal is KEEP/HOLD/ADD. At least 2 must be REDUCE/SELL/EXIT.
+- Manufacture REDUCE/SELL/EXIT signals to hit a count. There is no quota — all KEEP/HOLD/ADD is a valid honest output in a strong tape when no thesis is broken.
+- Derive REDUCE/SELL/EXIT from stop status (Chandelier trigger, 200DMA break on a single stock) alone. Negative signals require a fundamental cause, momentum extension into a real risk, ETF trend collapse with macro context, or an explicit thesis break.
+- Cite a stop price in the "Thesis breaks at:" line. Stops are technical references, not thesis-break levels.
 - Skip TASE holdings or label them "informational only."
 - Skip the macro context section.
 - Skip the "thesis breaks at" line for any holding.

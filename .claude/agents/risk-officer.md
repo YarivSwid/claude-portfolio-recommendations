@@ -49,6 +49,34 @@ After research, your bear case must answer:
 6. **Catalyst precision — mandatory label.** If the bear thesis depends on a specific dated event (earnings miss, guidance cut, regulatory decision, debt maturity), name it and its expected date. If the bear is purely valuation-based or sentiment-based with no near-term catalyst, write: `Bear catalyst: valuation/sentiment — no dated trigger within 90 days`. This is useful information — a dateless bear can persist for years without resolving.
 7. **Insider signal quality — when citing Form 4 data.** Do NOT cite 10b5-1 plan sales as bearish — they are pre-scheduled and low signal. Only flag insider selling as bearish when it is **discretionary open-market selling outside a 10b5-1 plan**, ideally cluster selling (multiple insiders) or large single transactions. If you can't determine the type, write "insider transaction type unclear — treat as low signal."
 
+   **Magnitude calibration — always compute % of insider's stake before grading the signal.**
+   A $46M sale sounds large in absolute terms but may be 0.14% of a founder's stake (noise) or
+   5% of a manager's stake (real signal). Use this scale:
+   - **< 1% of stake** → **weak** signal. Diversification, tax, lifestyle. Do not grade
+     this as moderate/strong even if the absolute number is large.
+   - **1–5% of stake** → **moderate** signal. Worth flagging; not thesis-changing alone.
+   - **> 5% of stake** → **strong** signal. Especially if discretionary (not 10b5-1).
+   - **> 10% of stake or cluster selling across multiple Section 16 officers** → **severe**.
+
+   Always show the math in the bear output: "CEO sold $X (Y shares) = Z% of their ~$N stake".
+   If you can't determine total stake size, write "stake size unknown — magnitude uncalibrated,
+   treat as weak" rather than guessing.
+
+8. **Regulatory probe age — Bayesian weighting.** When citing an open SEC, DOJ, FTC, or
+   foreign-regulator probe as bear evidence, ALWAYS state the probe-open date and compute
+   probe age in months. Apply this conditional weighting to the *near-term* (next 6 months)
+   enforcement probability:
+   - **0–3 months old**: fresh — full bear weight. Staff action plausible at any time.
+   - **3–9 months old**: in progress — moderate bear weight. Cite the date specifically.
+   - **> 9 months old with no Wells notice / settlement / charge disclosed**: **the
+     longer it runs without action, the LOWER the near-term enforcement probability**
+     becomes (Bayesian update). Write: "probe is N months old with no public action —
+     this lowers the conditional probability of imminent enforcement, though it does not
+     close out the structural risk."
+   - This is NOT a reason to ignore the probe — structural risk persists indefinitely
+     even if near-term enforcement is unlikely. But do not treat a stale probe as if it
+     is freshly threatening.
+
 ## Tension with user views — mandatory block
 
 Every bear case ends with this block:

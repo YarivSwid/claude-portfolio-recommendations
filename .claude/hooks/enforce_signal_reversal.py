@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
 """Stop hook — block a turn that silently reverses a signal from the last 14 days.
 
-When the assistant emits a BUY/SELL/HOLD/TRIM signal for a ticker that already has
-a signal file in research/signals/ from within 14 days, the turn must contain an
-explicit acknowledgement line:
+When the assistant emits a BUY/SELL/HOLD/TRIM/REDUCE/STRONG_BUY signal for a
+ticker that already has a signal file in research/signals/ from within 14 days,
+the turn must contain an explicit acknowledgement line:
   - "SIGNAL CHANGE: <prior> → <new> because ..." (reversal)
   - "SIGNAL CONFIRMED: still <signal> because ..." (confirmation)
 
 If a reversal is detected without that line, the turn is blocked.
 
-Only fires when the current turn contains a trade signal (same triple-check as
-enforce_risk_officer.py: signal marker + confidence + data_as_of).
+Only fires when the current turn contains a real trade signal (same triple-check
+as enforce_risk_officer.py: signal marker + confidence + data_as_of).
+
+Signal vocabulary, regex, and reversal-opposites map all come from the canonical
+scripts/lib/signal_patterns module — see Step 3 of the 2026-05-28 architecture
+fix batch. Pre-Step-5 the regex here was a local copy missing KEEP / REDUCE /
+STRONG BUY tokens, so broad-review signals slipped past reversal detection.
 """
 import json
 import re
@@ -19,31 +24,24 @@ from datetime import date
 from pathlib import Path
 
 ROOT        = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _log import emit, emit_error  # noqa: E402
+
+HOOK_NAME = "enforce_signal_reversal"
+
+from lib.signal_patterns import (
+    SIGNAL_MARKER_RE,
+    OPPOSITES,
+    SIGNAL_REVERSAL_ACK_RE as ACK_RE,
+    find_signals,
+    normalize_signal,
+)
+
 SIGNALS_DIR = ROOT / "research" / "signals"
 
-SIGNAL_MARKER_RE = re.compile(
-    r"(?:\*{0,2}\s*(?:signal|recommendation|action|verdict|trade\s*signal)\s*\*{0,2}\s*[:=]\s*\*{0,2}\s*"
-    r"(?:BUY|SELL|HOLD|TRIM|CUT|EXIT|ADD)\b"
-    r"|\|\s*\*{2}(?:BUY|SELL|HOLD|TRIM|CUT|EXIT|ADD)\*{2}\s*\|)",
-    re.IGNORECASE,
-)
 CONFIDENCE_RE = re.compile(r"\b[Cc]onfidence\s*[:=]\s*\*{0,2}\s*(weak|moderate|strong|0?\.\d+)", re.MULTILINE)
 DATA_AS_OF_RE = re.compile(r"\bdata_as_of\s*[:=]", re.IGNORECASE | re.MULTILINE)
-
-# Matches "SIGNAL: BUY | CONFIDENCE: ..." or "SIGNAL: SELL ..."
-SIGNAL_VALUE_RE = re.compile(r"\bSIGNAL\s*:\s*(BUY|SELL|HOLD|TRIM|CUT|EXIT|ADD)\b", re.IGNORECASE)
-TICKER_RE       = re.compile(r"\b([A-Z]{1,5}(?:[.-][A-Z]{1,3})?)\b")
-ACK_RE          = re.compile(r"SIGNAL\s+(CHANGE|CONFIRMED)\s*:", re.IGNORECASE)
-
-OPPOSITES = {
-    "BUY":  {"SELL", "TRIM", "EXIT", "CUT"},
-    "ADD":  {"SELL", "TRIM", "EXIT", "CUT"},
-    "SELL": {"BUY", "ADD"},
-    "TRIM": {"BUY", "ADD"},
-    "EXIT": {"BUY", "ADD"},
-    "CUT":  {"BUY", "ADD"},
-    "HOLD": set(),
-}
 
 
 def _load_prior_signal(ticker: str) -> dict | None:
@@ -90,7 +88,7 @@ def main():
     except Exception:
         sys.exit(0)
 
-    # Find current turn
+    # Find current turn (most recent real user message onward).
     last_user_idx = 0
     for i in range(len(entries) - 1, -1, -1):
         msg = entries[i].get("message", {}) or {}
@@ -103,7 +101,7 @@ def main():
 
     current_turn = entries[last_user_idx:]
 
-    # Collect all assistant text from current turn
+    # Collect all assistant text from current turn.
     full_text = ""
     for entry in current_turn:
         msg = entry.get("message", {}) or {}
@@ -113,38 +111,21 @@ def main():
             if isinstance(block, dict) and block.get("type") == "text":
                 full_text += block.get("text", "") + "\n"
 
-    # Only proceed if this turn contains a real trade signal
+    # Only proceed if this turn contains a real trade signal (triple-check
+    # matches enforce_risk_officer.py).
     if not (SIGNAL_MARKER_RE.search(full_text)
             and CONFIDENCE_RE.search(full_text)
             and DATA_AS_OF_RE.search(full_text)):
         sys.exit(0)
 
-    # Extract (ticker, signal) pairs from SIGNAL: <value> lines
-    # Look for patterns like "XLV ... SIGNAL: BUY" nearby
-    signal_blocks = re.findall(
-        r"([A-Z]{1,5}(?:[.\-][A-Z]{1,3})?)[^\n]*\n(?:[^\n]*\n){0,5}?"
-        r"SIGNAL\s*:\s*(BUY|SELL|HOLD|TRIM|CUT|EXIT|ADD)",
-        full_text, re.IGNORECASE
-    )
-    # Also catch "SIGNAL: BUY" standalone and pair with the most-mentioned ticker nearby
-    standalone = SIGNAL_VALUE_RE.findall(full_text)
-
-    # Build set of (ticker, new_signal) to check
-    to_check = set()
-    for ticker, sig in signal_blocks:
-        to_check.add((ticker.upper(), sig.upper()))
-
-    # For standalone signals, extract tickers from nearby context
-    if standalone and not signal_blocks:
-        # Find tickers mentioned in the turn (filter noise words)
-        _EXCLUDE = {"BUY","SELL","HOLD","TRIM","EXIT","CUT","ADD","NAV","USD","ILS",
-                    "FX","AI","ETF","YoY","QoQ","LOW","HIGH","MED"}
-        tickers_in_turn = [t for t in TICKER_RE.findall(full_text) if t not in _EXCLUDE and len(t) >= 2]
-        from collections import Counter
-        top = Counter(tickers_in_turn).most_common(3)
-        for ticker, _ in top:
-            for sig in standalone:
-                to_check.add((ticker.upper(), sig.upper()))
+    # Canonical extraction: every (ticker, signal) pair via signal_patterns.
+    # Pre-Step-5 this hook had its own per-line regex that missed broad-review
+    # vocabulary (KEEP / REDUCE / STRONG BUY). Now uses find_signals which
+    # handles the per-holding row format ("TEVA — REDUCE — ...") and the
+    # table-cell format ("| TEVA | $X | **REDUCE** | ...").
+    to_check: set[tuple[str, str]] = set()
+    for ticker, sig in find_signals(full_text):
+        to_check.add((ticker.upper(), normalize_signal(sig)))
 
     has_ack = bool(ACK_RE.search(full_text))
 
@@ -166,11 +147,19 @@ def main():
                     f"If the prior signal is stale due to new material news, cite it specifically."
                 ),
             }
+            emit(HOOK_NAME, "block", reason=f"unack reversal {prior_signal}->{new_signal} on {ticker}")
             print(json.dumps(out))
             sys.exit(0)
 
+    emit(HOOK_NAME, "pass")
     sys.exit(0)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except BaseException as _e:
+        emit_error(HOOK_NAME, _e)
+        sys.exit(0)

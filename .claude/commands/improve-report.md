@@ -59,4 +59,4 @@ A single JSON file at `research/daily/<today>/report-improvements.json` plus a o
 
 ## After this command finishes
 
-The user reviews the JSON in the dashboard's Report tab (under the ✨ panel) and decides which proposals to apply. When they're ready, they ask the main Claude session to "apply the report improvements," and that session reads the JSON and executes the writes — this command does NOT do that itself.
+The user reviews the JSON in the dashboard's Report tab (under the new ✨ panel) and decides which proposals to apply. When they're ready, they ask the main Claude session to "apply the report improvements," and that session reads the JSON and executes the writes — this command does NOT do that itself.

@@ -54,15 +54,51 @@ def validate_positions(positions: list[dict[str, Any]]) -> list[str]:
     return errors
 
 
+PARSER_MANAGED_KEYS: frozenset[str] = frozenset(
+    {"schema_version", "generated_at", "meta", "positions"}
+)
+
+
+def _merge_extension_keys(
+    payload: dict[str, Any], existing_path: Path
+) -> dict[str, Any]:
+    """Preserve top-level keys the parser does NOT manage.
+
+    Other writers (the charts dashboard writes `cash_ready_usd` /
+    `cash_ready_updated_at`; future tabs may write more) put state at the root
+    of `positions.json`. Without this merge, the parser silently wipes those
+    fields on every re-parse — see architecture-review 2026-05-28 finding from
+    the system-architect on multi-writer schema corruption.
+
+    Strategy: preserve-unknown. Any key in the existing file that is NOT in
+    PARSER_MANAGED_KEYS survives the re-write. Failures during read (missing
+    file, corrupt JSON) fall through to today's clobber behavior so the parser
+    never loses data due to a defensive helper raising.
+    """
+    if not existing_path.exists():
+        return payload
+    try:
+        existing = json.loads(existing_path.read_text())
+    except Exception:
+        return payload
+    if not isinstance(existing, dict):
+        return payload
+    for k, v in existing.items():
+        if k not in PARSER_MANAGED_KEYS and k not in payload:
+            payload[k] = v
+    return payload
+
+
 def write_positions(positions: list[dict[str, Any]], meta: dict[str, Any]) -> Path:
     PORTFOLIO_DIR.mkdir(parents=True, exist_ok=True)
     path = PORTFOLIO_DIR / "positions.json"
-    payload = {
+    payload: dict[str, Any] = {
         "schema_version": POSITIONS_SCHEMA_VERSION,
         "generated_at": dt.datetime.now().isoformat(timespec="seconds"),
         "meta": meta,
         "positions": positions,
     }
+    payload = _merge_extension_keys(payload, path)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
     return path
 

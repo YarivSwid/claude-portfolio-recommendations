@@ -7,7 +7,10 @@ Pulls three regime inputs and returns a structured JSON:
   3. SPY vs 200-day moving average via yfinance
 
 Outputs a composite label (extreme-fear / fear / neutral / greed / extreme-greed)
-and a bull_lean_adjustment for the portfolio-manager subagent.
+and a word-enum regime_lean for the portfolio-manager subagent. The portfolio-
+manager spec forbids composite-score arithmetic — the lean is a category, not
+a number. The legacy `bull_lean_adjustment` numeric field is still emitted for
+backward compatibility but is deprecated; new consumers must use `regime_lean`.
 
 Caches daily under research/daily/<date>/market-regime.json to avoid repeat
 fetches. Pass {"force_refresh": true} to bypass the cache.
@@ -162,8 +165,23 @@ def fetch_spy_vs_200dma() -> dict:
         return {"spy_price": None, "ma_200": None, "error": str(e)[:120]}
 
 
-def composite_regime(fg: dict, vix: dict, spy: dict) -> tuple[str, float, list[str]]:
-    """Return (composite_label, bull_lean_adjustment, warnings)."""
+# Word-enum regime lean. Consumers must branch on the word, not arithmetic on
+# the legacy scalar. One value per composite regime.
+REGIME_LEAN_WORDS = {
+    "extreme-fear":   "lean_strong_bullish",
+    "fear":           "lean_bullish",
+    "neutral":        "neutral",
+    "greed":          "cool_off",
+    "extreme-greed":  "cool_off_hard",
+}
+
+
+def composite_regime(fg: dict, vix: dict, spy: dict) -> tuple[str, float, str, list[str]]:
+    """Return (composite_label, bull_lean_adjustment_legacy, regime_lean_word, warnings).
+
+    `bull_lean_adjustment_legacy` is preserved for one transition cycle so
+    existing consumers don't break. New consumers must read `regime_lean_word`.
+    """
     warnings = []
     fg_v = fg.get("value")
     vix_v = vix.get("value")
@@ -176,24 +194,27 @@ def composite_regime(fg: dict, vix: dict, spy: dict) -> tuple[str, float, list[s
     if spy_pct is None:
         warnings.append("SPY 200DMA unavailable")
 
+    def _result(label: str, legacy_adj: float) -> tuple[str, float, str, list[str]]:
+        return (label, legacy_adj, REGIME_LEAN_WORDS[label], warnings)
+
     # Extreme-fear triggers
     if (fg_v is not None and fg_v < 25) or (vix_v is not None and vix_v > 30) or (spy_pct is not None and spy_pct < -5):
-        return ("extreme-fear", 0.30, warnings)
+        return _result("extreme-fear", 0.30)
     # Extreme-greed triggers (require ALL three to agree — strict)
     if (
         fg_v is not None and fg_v > 75
         and vix_v is not None and vix_v < 15
         and spy_pct is not None and spy_pct > 15
     ):
-        return ("extreme-greed", -0.25, warnings)
+        return _result("extreme-greed", -0.25)
     # Fear
     if (fg_v is not None and fg_v < 45) or (vix_v is not None and 20 <= vix_v <= 30):
-        return ("fear", 0.15, warnings)
+        return _result("fear", 0.15)
     # Greed
     if (fg_v is not None and 55 <= fg_v <= 75) and (vix_v is not None and vix_v < 18):
-        return ("greed", -0.10, warnings)
+        return _result("greed", -0.10)
     # Default
-    return ("neutral", 0.0, warnings)
+    return _result("neutral", 0.0)
 
 
 def main() -> None:
@@ -219,7 +240,7 @@ def main() -> None:
     fg = fetch_fear_greed()
     vix = fetch_vix()
     spy = fetch_spy_vs_200dma()
-    label, adj, warnings = composite_regime(fg, vix, spy)
+    label, legacy_adj, regime_lean_word, warnings = composite_regime(fg, vix, spy)
 
     out = {
         "data_as_of": today,
@@ -227,7 +248,11 @@ def main() -> None:
         "vix": vix,
         "spy_vs_200dma": spy,
         "regime_composite": label,
-        "bull_lean_adjustment": adj,
+        # Word enum is the canonical lean. portfolio-manager.md requires
+        # words-not-numbers — consume this, not the deprecated scalar below.
+        "regime_lean": regime_lean_word,
+        # DEPRECATED: kept for one transition cycle. Do NOT add new arithmetic on it.
+        "bull_lean_adjustment": legacy_adj,
         "warnings": warnings,
     }
 

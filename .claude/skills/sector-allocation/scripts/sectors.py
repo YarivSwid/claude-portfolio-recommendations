@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT))
 
 from scripts.lib import data as pdata  # noqa: E402
+from scripts.lib import fx as pfx  # noqa: E402
 from scripts.lib import io as pio  # noqa: E402
 
 
@@ -49,8 +50,16 @@ def main() -> None:
     doc = pio.load_positions()
     positions = doc.get("positions", [])
     meta = doc.get("meta", {}) or {}
-    fx_rate = meta.get("fx_rate_ils_per_usd")
-    fx_as_of = meta.get("fx_as_of")
+    snapshot_fx_rate = meta.get("fx_rate_ils_per_usd")
+    snapshot_fx_as_of = meta.get("fx_as_of")
+
+    live_fx_rate, live_fx_as_of = pfx.usd_ils_rate(force_refresh=True)
+    fx_rate = live_fx_rate if live_fx_rate is not None else snapshot_fx_rate
+    fx_as_of = live_fx_as_of if live_fx_rate is not None else snapshot_fx_as_of
+
+    fx_drift_pct = None
+    if live_fx_rate and snapshot_fx_rate and snapshot_fx_rate != 0:
+        fx_drift_pct = round((live_fx_rate - snapshot_fx_rate) / snapshot_fx_rate * 100, 2)
 
     if not positions:
         print(json.dumps({
@@ -109,10 +118,20 @@ def main() -> None:
     def _round_dict(d: dict) -> dict:
         return {k: round(v, 4) for k, v in sorted(d.items(), key=lambda kv: -kv[1])}
 
+    if fx_drift_pct is not None and abs(fx_drift_pct) >= 1.0:
+        warnings.append(
+            f"FX drift {fx_drift_pct:+.2f}% — snapshot FX {snapshot_fx_rate:.4f} "
+            f"({snapshot_fx_as_of}) vs live {live_fx_rate:.4f} ({live_fx_as_of}). "
+            "NAV uses live FX; re-parse positions to refresh the snapshot."
+        )
+
     result = {
         "data_as_of": dt.date.today().isoformat(),
         "fx_as_of": fx_as_of,
         "fx_rate_ils_per_usd": fx_rate,
+        "snapshot_fx_as_of": snapshot_fx_as_of,
+        "snapshot_fx_rate_ils_per_usd": snapshot_fx_rate,
+        "fx_drift_pct_vs_snapshot": fx_drift_pct,
         "nav_ils": round(nav_ils, 2),
         "nav_usd": round(nav_usd, 2) if nav_usd is not None else None,
         "by_region": _round_dict(by_region),

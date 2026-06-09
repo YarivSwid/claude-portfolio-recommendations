@@ -16,7 +16,7 @@ description: Maintains an append-only JSONL log of every BUY/SELL/HOLD/ADD/TRIM 
 The workbench was already persisting per-ticker signals to `research/signals/<TICKER>_<date>.json` —
 good for reversal detection, useless for aggregate review. The decision-log is the *flat*
 projection of those signals into a single append-only JSONL, joined later against current
-prices to answer "did we add value?" Foundation for the backtesting skill once
+prices to answer "did we add value?" Foundation for the backtesting skill (topic #7) once
 enough data accumulates.
 
 ## Output format
@@ -97,10 +97,10 @@ The append script is idempotent — re-running on the same signal file is a no-o
 - **Append-only.** Never edit a row in-place. If a signal is later reversed, write a
   NEW row with the new signal — the old one stays as historical record.
 - **Currency consistency.** Every row records the entry-price currency (USD for US
-  tickers, ILS for TASE tickers with `.TA` suffix). The review script handles FX
-  conversion for dual-currency P&L reporting.
+  tickers, ILS for TASE). The review script handles FX conversion for dual-currency
+  P&L reporting.
 - **Source-traceable.** Every row carries `source_signal_file` so the full bull/bear/manager
   context is reconstructable for any logged decision.
 - **NOT a backtest.** Decision-log is *prospective* — records signals as they were emitted
-  with the price at that moment. Backtest analysis is the *aggregate* analysis built on
+  with the price at that moment. Backtest (skill #7) is the *aggregate* analysis built on
   top of this data once 30+ entries exist.

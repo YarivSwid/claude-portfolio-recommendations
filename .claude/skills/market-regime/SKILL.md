@@ -42,7 +42,8 @@ Optional keys:
     "label": "uptrend",
     "source": "yfinance SPY"
   },
-  "regime_composite": "neutral-greed",
+  "regime_composite": "neutral",
+  "regime_lean": "neutral",
   "bull_lean_adjustment": 0.0,
   "warnings": []
 }
@@ -57,13 +58,24 @@ Based on a weighted combination of the three signals:
 - `greed`: F&G 55-75 AND VIX < 18
 - `extreme-greed` (contrarian WAIT): F&G > 75 AND VIX < 15 AND SPY > 200DMA by >15%
 
-### `bull_lean_adjustment` values (used by portfolio-manager)
+### `regime_lean` — word enum consumed by portfolio-manager
 
-- `extreme-fear`: +0.30 (heavily lean bullish — contrarian buy)
-- `fear`: +0.15
-- `neutral`: 0.00 (default profile lean still applies)
-- `greed`: -0.10
-- `extreme-greed`: -0.25 (lean bearish, don't chase)
+`portfolio-manager.md` forbids composite-score arithmetic. The lean is a
+**category**, not a number. Consumers must branch on the word:
+
+| regime_composite | regime_lean             | meaning |
+|---|---|---|
+| `extreme-fear`   | `lean_strong_bullish`   | contrarian buy; widen bullish lean |
+| `fear`           | `lean_bullish`          | modest bullish lean above default |
+| `neutral`        | `neutral`               | default profile lean |
+| `greed`          | `cool_off`              | trim bullish lean; don't chase |
+| `extreme-greed`  | `cool_off_hard`         | distinctly bearish lean; no chase |
+
+### `bull_lean_adjustment` — DEPRECATED numeric scalar
+
+Kept for one transition cycle for backward compatibility. New code MUST consume
+`regime_lean` (the word enum). The numeric form will be removed once all
+consumers migrate.
 
 ## Notes
 

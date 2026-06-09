@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT))
 
 from scripts.lib import data as pdata  # noqa: E402
+from scripts.lib import fx as pfx  # noqa: E402
 from scripts.lib import io as pio  # noqa: E402
 
 TRADING_DAYS = 252
@@ -155,7 +156,9 @@ def main() -> None:
     doc = pio.load_positions()
     positions = doc.get("positions", [])
     meta = doc.get("meta", {}) or {}
-    fx_rate = meta.get("fx_rate_ils_per_usd")
+    snapshot_fx_rate = meta.get("fx_rate_ils_per_usd")
+    live_fx_rate, _ = pfx.usd_ils_rate(force_refresh=True)
+    fx_rate = live_fx_rate if live_fx_rate is not None else snapshot_fx_rate
 
     if not positions:
         print(json.dumps({

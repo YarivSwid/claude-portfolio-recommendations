@@ -26,17 +26,17 @@ A generic template is provided at `research/user-views.example.md`. Copy it to `
 4. **Disclose uncertainty explicitly.** If yfinance is stale, if a field is missing, if the FX rate is > 1 day old — say so. Never fill a blank with a plausible-looking number.
 5. **Personal-advice disclaimer.** Every recommendation ends with: *"Educational analysis, not investment advice. Decisions are yours."*
 6. **Priority rules** (lowered priority, not vetoes — the portfolio-manager weighs them into the final call):
-   - **Micro-caps** (< $300M US, < ₪500M TASE): lower priority. The bull-officer may still produce a bull case; the manager requires a stronger-than-usual thesis to BUY.
+   - **Micro-caps** (< $300M market cap): lower priority. The bull-officer may still produce a bull case; the manager requires a stronger-than-usual thesis to BUY.
    - **Crypto**: lower priority. Subagents may analyze and produce BUY/SELL/HOLD on crypto names (incl. adding to `IBIT`), but the manager's default lean is to **reduce** crypto exposure unless bull confidence is materially higher than bear and the thesis is specific. Do not volunteer new crypto names unprompted.
    - **Concentration**: the user manages position sizing themselves. Report weights, HHI, and factor stacks as **informational** data in snapshots. Do NOT auto-flag, downgrade, or TRIM based on position size alone. No position-size veto on the manager's final call.
-7. **Dual-currency display.** Every monetary figure shows both ILS and USD with the FX date: `₪1,234 (~$345, FX 2026-04-20)`.
+7. **Currency display.** Show monetary figures in the user's home currency as defined in `research/user-views.md`. If the user trades multiple currencies, show both with the FX date (e.g. `$1,234 (€1,100, FX 2026-04-20)`). Read the user's currency preference from `user-views.md` before displaying any figure.
 8. **Taxable-event flag.** If a proposed sale realizes a gain, append: *"This is a taxable event — handle tax outside this tool."* Do not size the tax. (User opted out of the tax layer.)
 
 ## Data rules
 
 - Primary data source: `yfinance` via `scripts/lib/data.py`. Cached daily to avoid rate limiting.
-- TASE tickers use the `.TA` suffix in yfinance (e.g., `TEVA.TA`). The parser emits both the plain symbol and the yfinance symbol.
-- FX: `USDILS=X` via the same cache, once per day.
+- Local-exchange tickers (non-US) use the exchange suffix in yfinance (e.g. `.TA` for Tel Aviv, `.L` for London, `.TO` for Toronto). The parser emits both the plain symbol and the yfinance symbol.
+- FX rates via yfinance (e.g. `USDILS=X`, `USDEUR=X`) — fetched once per day via the same cache.
 - If a skill returns `data_as_of` older than **24 hours**, flag it in the final output.
 - Never fabricate a price, volume, or fundamental. If yfinance returns empty, say "unavailable."
 
@@ -72,18 +72,20 @@ Run all skills via `echo '<JSON>' | python3 .claude/skills/<name>/scripts/<scrip
 
 | Skill | Script | Purpose |
 |---|---|---|
-| `portfolio-parse` | `parse.py` | Parse Hebrew broker exports → `portfolio/positions.json` + `transactions.json` |
-| `risk-metrics` | `sharpe_dd.py` | Sharpe, Sortino, max drawdown, beta vs SPY/TA35 |
+| `portfolio-parse` | `parse.py` | Parse broker exports → `portfolio/positions.json` + `transactions.json` |
+| `risk-metrics` | `sharpe_dd.py` | Sharpe, Sortino, max drawdown, beta vs SPY |
 | `sector-allocation` | `sectors.py` | Weights by sector/region/currency, HHI concentration |
 | `earnings-calendar` | `earnings.py` | Next earnings dates for all holdings, flags within 14 days |
 | `market-regime` | `regime.py` | CNN Fear & Greed (with VIX-percentile fallback) + VIX + SPY-200DMA composite label |
 | `screener` | `screen.py` | S&P 500 candidate ranking by growth/momentum/quality |
-| `currency-conversion` | `fx.py` | USD↔ILS at daily-cached yfinance rate |
+| `currency-conversion` | `fx.py` | Currency conversion at daily-cached yfinance rate |
 | `charts/dashboard` | `dashboard.py` | Interactive browser dashboard (local HTTP server, auto-opens) |
 | `charts/png` | `chart.py` | Static PNG allocation donut (inline in Claude Code chat) |
 | `opportunity-scanner` | `scan.py` | Three ranked opportunity lists (portfolio-fit, profile-fit, market) via the three-agent pipeline |
 | `portfolio-update` | `update.py` | Records a buy/sell/trim trade and updates positions.json + snapshot + xlsx atomically |
-| `momentum-check` | `momentum.py` | Per-ticker momentum metrics from yfinance cache: consecutive up-day streak, % change 5/10/30/90d, dist from 50DMA/200DMA/52w-high, RSI(14), `streak_flag` (normal/extended). No LLM. |
+| `momentum-check` | `momentum.py` | Per-ticker momentum + trend context from yfinance cache: consecutive up-day streak, % change 5/10/30/90d, dist from 50/150/200DMA + 52w-high, RSI(14), `streak_flag` (normal/extended), `trend_flags` (golden_150_cross, death_200_cross, golden_cross_50_200, etc. — descriptive context, not actions), `days_above_150dma/200dma` streaks. No LLM. |
+| `stops` | `stops.py` | Per-holding stop-loss reference **levels (informational only — no action tokens)**. For stocks returns BOTH a Chandelier 3×ATR(14) `trader_stop` AND a 200DMA `investor_stop`, side-by-side. Crypto ETFs get Chandelier 5×ATR(14). Equity ETFs/mutual funds get 200DMA. Status labels are descriptive (`below`/`near`/`above`). The skill does NOT emit REDUCE/SELL/EXIT/WATCH — the daily-report rule forbids deriving signals from this output. Renders in the Trend & Stops Reference block at the bottom of the report. No LLM. |
+| `early-movers` | `early.py` | S&P 500 discovery filter on 150DMA setups (fresh breakouts + uptrend pullbacks). Hard macro gate: if SPY ≤ its 200DMA, all candidates downgrade to WATCH with `macro_veto` set — no BUY tokens emitted. No LLM. |
 
 **Dashboard usage:**
 ```bash
@@ -126,20 +128,37 @@ Always run dashboard with `run_in_background=true` — it blocks until killed.
 
 Every daily report MUST:
 1. Include a **macro context section** (Fed, rates, DXY, oil, recession indicators) before per-holding analysis.
-2. Analyze **ALL holdings including TASE/IL** — no "informational only" cop-outs.
-3. Include at least **2 SELL/REDUCE/EXIT signals** — if everything is KEEP/ADD, the analysis is dishonest.
+2. Analyze **ALL holdings** — no "informational only" cop-outs for any position regardless of exchange.
+3. **Per-holding critical thinking — not a sell quota.** For every holding, the report must include:
+   - (a) the "Thesis breaks at:" line (price or metric threshold) — see rule 4,
+   - (b) a one-sentence current bear case (what would I be wrong about?),
+   - (c) the momentum-extension flag if `momentum-check.streak_flag == "extended"`,
+   - (d) any `trend_flags` from momentum-check (golden/death crosses) as descriptive context.
+
+   REDUCE/SELL/EXIT signals are emitted ONLY when a real cause exists: fundamental deterioration, momentum extension into an identified risk (e.g. RSI 78 into earnings), an ETF trend collapse confirmed by macro context, a crypto-ETF Chandelier break, or an explicit thesis break. **There is no minimum count of negative signals.** Honest output in a Greed/ATH regime with no fundamental breaks is mostly KEEP/HOLD/ADD with 0–1 negatives. Manufacturing negatives to satisfy a quota is itself a form of dishonesty. If 0 negatives are warranted, the Ripe Decisions section must explicitly say "No negative signals warranted today — here's what I looked at and dismissed: …" so the analyst is forced to think about it.
 4. Include a **"Thesis breaks at:"** line for every holding (price or metric threshold).
 5. **Bridge cash deployment to opportunity lists** — read `opportunities.json` and unify the recommendation.
 6. Use the **full signal vocabulary**: STRONG BUY / ADD / KEEP / HOLD / REDUCE / SELL / EXIT.
+7. **Include a Trend & Stops Reference block at the BOTTOM of the report — informational only.** Invoke the `stops` skill and the `momentum-check` skill (latter for `pct_vs_150dma`, `pct_vs_200dma`, `days_above_150dma/200dma`, and `trend_flags`). Render:
+   - **Stocks — dual stop reference:** `Ticker | Current | Trader stop (3×ATR) | Δ% | Status | Investor stop (200DMA) | Δ% | Status` (both levels side-by-side so the difference between Chandelier noise and a real 200DMA break is obvious).
+   - **ETFs / mutual funds — 200DMA reference:** `Ticker | Current | 200DMA | Δ% | Status`.
+   - **Crypto ETFs — 5×ATR Chandelier reference:** `Ticker | Current | 5×ATR stop | Δ% | Status`.
+   - **Trend context table:** for every holding, `pct_vs_150dma`, `pct_vs_200dma`, `days_above_150dma`, `days_above_200dma`, plus any `trend_flags` (golden_150_cross, death_200_cross, golden_cross_50_200, etc.).
+
+   **Hard rule:** these tables are NEVER cited as the cause of a REDUCE/SELL/EXIT in the per-holding analysis above. Status labels are `below` / `near` / `above` — purely descriptive. The skills no longer emit `REDUCE` / `WATCH` action tokens, and the analyst is forbidden from inventing them from stop status. If `summary.stocks_below_investor_stop` is non-empty in a Greed/ATH regime, the table includes a one-line note framing it as "lagging the rally, not breaking down."
+8. **Include an Early Movers section** — invoke the `early-movers` skill and render `breakouts` and `pullbacks` as two short tables. Header text depends on the macro gate from the skill output:
+   - `gate == "open"` (SPY > 200DMA) → header `Early Movers — 150DMA Setup` with `signal: BUY` rows.
+   - `gate == "closed"` (SPY ≤ 200DMA) → header `Early Movers — WATCH ONLY (macro gate)` with every row showing `signal: WATCH (macro)` and the `macro_veto` reason.
+   - `gate == "closed"` ALSO triggers a **caution badge** at the top of every other BUY surface in the report (opportunity-scanner table, broad-review ADD signals): "⚠ Macro caution — SPY <200DMA. The 150DMA early-movers list is currently WATCH-only; broader BUY signals still emit but should be sized conservatively." The badge is informational on other surfaces, hard-blocking only on early-movers (per user-spec).
 
 ## Opportunity scanner quality rules
 
 The scanner MUST:
-1. **Deduplicate across lists** — 30 slots = 30 unique tickers, no repeats.
+1. **Cross-list overlap is allowed** — if a ticker shows up on multiple lists (e.g. NVDA on lists 1, 2, and 3), that is a *conviction signal* from three independent angles, not a bug. The scanner flags overlaps via `_dedup_warning` and `_duplicate_of` for visibility, but does NOT remove them. Do not strip duplicates by hand; treat them as informational.
 2. **All 30 slots are actionable buy candidates** — signals are STRONG_BUY / BUY / WATCH only. HOLD, AVOID, and SELL are forbidden in opportunity lists. WATCH entries must include a `when_to_buy` field explaining the specific trigger.
 3. **Respect total cash** — per-ticker sizing capped at cash/5; totals cannot exceed available cash.
 4. Mark names **reporting earnings within 7 days as WATCH** and specify in `when_to_buy` exactly what to wait for.
-5. **Run Phase 2** (three-agent deep analysis) by default — `phase1_only` is opt-in, not the default.
+5. **Always run Phase 1 only.** Never run Phase 2 unless the user explicitly requests it in the current turn. Do not pass `phase1_only=false` on behalf of the user or as a "default" for any flow including the daily report.
 6. **No overlapping ETFs** — never recommend two ETFs that track the same sector/index/theme (e.g. SMH+SOXX, SPY+VOO, VGT+XLK, EEM+IEMG). A `KNOWN_ETF_FAMILIES` lookup in `scan.py` catches these automatically post-Phase-1 and flags them.
 
 ## What NOT to do
@@ -149,8 +168,9 @@ The scanner MUST:
 - Don't produce a daily-scan that includes BUY/SELL/HOLD. The dashboard is read-only by design.
 - Don't quote a number you didn't get from a skill or a cited source.
 - Don't skip the bear case because "the bull case is obvious."
-- Don't produce a report where all signals are positive (KEEP/ADD/HOLD). Include negative calls.
-- Don't label TASE holdings "informational" — analyze them fully.
+- **Don't derive REDUCE/SELL/EXIT signals from stop status.** Stops are informational reference levels only — see daily-report rule 3 and 7. If your only justification for a negative signal is "the Chandelier triggered" or "price broke its 200DMA stop," re-justify from fundamentals (with cited sources), momentum extension into a real risk, ETF trend collapse with macro context, or an explicit thesis-break — or remove the negative signal.
+- **Don't derive BUY/ADD signals from `trend_flags` alone.** A `golden_150_cross` is bullish context (Weinstein stage-2 setup), not an auto-BUY. The decision still requires fundamentals and a thesis.
+- **Don't manufacture negative signals to hit a count.** There is no minimum number of REDUCE/SELL/EXIT signals per report. Honest output in a Greed/ATH regime with no fundamental breaks is mostly KEEP/HOLD/ADD with 0–1 negatives. If 0 are warranted, state so explicitly in Ripe Decisions with the reasoning.
 - Don't skip the macro section in daily reports.
 - Don't skip "thesis breaks at" for any holding.
 - Don't produce opportunity lists with >20% duplicate tickers across lists.

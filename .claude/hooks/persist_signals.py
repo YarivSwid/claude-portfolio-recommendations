@@ -15,29 +15,28 @@ from datetime import date
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from lib.signal_patterns import (
+    SIGNAL_MARKER_RE,
+    TICKER_BLACKLIST,
+    find_signals,
+)
+from _log import emit, emit_error  # noqa: E402
+
+HOOK_NAME = "persist_signals"
+
 SIGNALS_DIR = ROOT / "research" / "signals"
 
-SIGNAL_MARKER_RE = re.compile(
-    r"(?:\*{0,2}\s*(?:signal|recommendation|action|verdict|trade\s*signal)\s*\*{0,2}\s*[:=]\s*\*{0,2}\s*"
-    r"(?:BUY|SELL|HOLD|TRIM|CUT|EXIT|ADD)\b"
-    r"|\|\s*\*{2}(?:BUY|SELL|HOLD|TRIM|CUT|EXIT|ADD)\*{2}\s*\|)",
-    re.IGNORECASE,
-)
 CONFIDENCE_RE = re.compile(
     r"\b[Cc]onfidence\s*[:=]\s*\*{0,2}\s*(weak|moderate|strong|severe|0?\.\d+)",
     re.MULTILINE,
 )
 DATA_AS_OF_RE = re.compile(r"\bdata_as_of\s*[:=]\s*(\S+)", re.IGNORECASE | re.MULTILINE)
-SIGNAL_VALUE_RE = re.compile(
-    r"\b(?:signal|recommendation|action|verdict)\s*[:=]\s*\*{0,2}\s*(BUY|SELL|HOLD|TRIM|CUT|EXIT|ADD)\b",
-    re.IGNORECASE,
-)
-TICKER_RE = re.compile(r"\b([A-Z]{1,5}(?:[.\-][A-Z]{1,3})?)\b")
-_EXCLUDE = {
-    "BUY", "SELL", "HOLD", "KEEP", "ADD", "TRIM", "EXIT", "FLAG",
-    "REDUCE", "AVOID", "SKIP", "WATCH",
-    "NAV", "USD", "ILS", "FX", "IL", "EU", "US", "UK", "AI",
-    "GT", "ATF", "TA", "ETF", "CC", "YoY", "QoQ",
+
+_EXCLUDE = set(TICKER_BLACKLIST) | {
+    "IL", "EU", "GT", "ATF", "TA", "CC", "YoY", "QoQ",
     "MED", "HIGH", "LOW", "RISK", "Q1", "Q2", "Q3", "Q4",
 }
 
@@ -99,14 +98,39 @@ def main():
     data_as_of_match = DATA_AS_OF_RE.search(full_text)
     data_as_of = data_as_of_match.group(1).strip("*").strip() if data_as_of_match else today
 
-    signal_blocks = re.findall(
-        r"([A-Z]{1,5}(?:[.\-][A-Z]{1,3})?)[^\n]*\n(?:[^\n]*\n){0,5}?"
-        r"(?:signal|recommendation|action|verdict)\s*[:=]\s*\*{0,2}\s*(BUY|SELL|HOLD|TRIM|CUT|EXIT|ADD)",
-        full_text, re.IGNORECASE,
-    )
+    signal_blocks = find_signals(full_text)
 
     written = []
     SIGNALS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Fetch momentum tier per unique BUY/ADD ticker at signal-emit time, so the
+    # decision-log captures the tier as-of-decision-date (Red today may be Normal
+    # in 3 weeks; backtesting needs the historical value). One call per ticker,
+    # cached daily by momentum-check via the yfinance cache.
+    unique_tickers = []
+    for t, _ in signal_blocks:
+        tu = t.upper()
+        if tu in _EXCLUDE or len(tu) < 2 or tu in unique_tickers:
+            continue
+        unique_tickers.append(tu)
+    tier_by_ticker: dict = {}
+    if unique_tickers:
+        try:
+            import subprocess
+            MOM_SCRIPT = ROOT / ".claude" / "skills" / "momentum-check" / "scripts" / "momentum.py"
+            if MOM_SCRIPT.exists():
+                proc = subprocess.run(
+                    ["python3", str(MOM_SCRIPT)],
+                    input=json.dumps({"tickers": unique_tickers}),
+                    capture_output=True, text=True, timeout=60, cwd=str(ROOT),
+                )
+                if proc.returncode == 0:
+                    res = json.loads(proc.stdout).get("results", {})
+                    for t, m in res.items():
+                        if isinstance(m, dict):
+                            tier_by_ticker[t] = m.get("tier")
+        except Exception:
+            pass
 
     for ticker, signal in signal_blocks:
         ticker = ticker.upper()
@@ -120,15 +144,44 @@ def main():
             "confidence": confidence,
             "data_as_of": data_as_of,
             "persisted_at": today,
+            "tier": tier_by_ticker.get(ticker),
+            # Embed the most recent assistant text so decision-log/append.py can
+            # extract R/R + thesis-breaks-at without re-reading the transcript.
+            "raw": full_text[-12000:],
         }
         try:
-            path.write_text(json.dumps(record, indent=2))
+            path.write_text(json.dumps(record, ensure_ascii=False, indent=2))
             written.append(ticker)
         except Exception:
             continue
 
+    # Append each persisted signal to research/decisions.jsonl via decision-log skill.
+    # Fire-and-forget — non-fatal on errors so signal persistence never blocks on
+    # the log write. The append script is idempotent (skips if source_signal_file
+    # is already logged).
+    import subprocess
+    APPEND_SCRIPT = ROOT / ".claude" / "skills" / "decision-log" / "scripts" / "append.py"
+    if APPEND_SCRIPT.exists():
+        for ticker in written:
+            try:
+                signal_file_rel = f"research/signals/{ticker}_{today}.json"
+                subprocess.run(
+                    ["python3", str(APPEND_SCRIPT)],
+                    input=json.dumps({"signal_file": signal_file_rel}),
+                    capture_output=True, text=True, timeout=30,
+                )
+            except Exception:
+                continue
+
+    emit(HOOK_NAME, "pass", reason=f"persisted {len(written)} signal(s)" if written else "no signals to persist")
     sys.exit(0)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except BaseException as _e:
+        emit_error(HOOK_NAME, _e)
+        sys.exit(0)

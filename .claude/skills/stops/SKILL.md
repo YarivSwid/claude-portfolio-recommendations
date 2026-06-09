@@ -28,7 +28,7 @@ The skill returns price levels, distances, and descriptive status labels (`below
 - ATR(14) uses Wilder's true-range smoothing — standard definition ([Investopedia](https://www.investopedia.com/terms/a/atr.asp)).
 - For stocks we emit BOTH the trader and investor levels so you can see them side-by-side: a Chandelier trigger in a strong uptrend is almost always noise, while a 200DMA break is a meaningful long-horizon event. Having both visible makes the difference obvious.
 - Diversified ETFs whipsaw on ATR stops because internal positions hedge each other; trend-following on the 200DMA is the textbook diversified-basket rule.
-- IBIT runs at ~3× the vol of SPY; a 3×ATR stop on it fires on routine moves. 5×ATR is the wider compromise for crypto ETFs.
+- IBIT runs at ~3× the vol of SPY; a 3×ATR stop on it fires on routine moves. 5×ATR is the user-specified compromise.
 
 ## Status labels (descriptive, not actions)
 
@@ -99,12 +99,12 @@ echo '{"tickers": ["MU","NVDA","JPM"]}' | python3 .claude/skills/stops/scripts/s
     }
   ],
   "summary": {
-    "stocks_below_trader_stop": ["NVDA"],
-    "stocks_near_trader_stop":  ["GOOG","META"],
-    "stocks_below_investor_stop": [],
+    "stocks_below_trader_stop": ["TEVA","NVDA","NET","VRT"],
+    "stocks_near_trader_stop":  ["GOOG","BRK-B","MSFT","META"],
+    "stocks_below_investor_stop": ["META","MSFT","BRK-B"],
     "etfs_below_200dma": ["IGV"],
     "crypto_below_5atr": [],
-    "errors": []
+    "errors": ["IL5138409","IL5133731","HRL.F16"]
   }
 }
 ```
@@ -117,5 +117,5 @@ Render the `results[]` and `summary` in the **Trend & Stops Reference** block at
 
 - **Not a trade execution signal.** Workbench is read-only.
 - **Not an entry-price stop.** Chandelier is anchored to the *recent high*, so on a name purchased at entry $E that has rallied 50%, the stop is calibrated to the rally, not to $E.
-- **Not a thesis-break level.** Qualitative "thesis breaks at $X" lines live elsewhere and supersede this when available.
+- **Not a thesis-break level.** The qualitative "thesis breaks at $X" lines in `research/theses/` live elsewhere and supersede this when available.
 - **Not an action token source.** The action field that previous versions emitted has been removed. If a future consumer needs an action signal, it must compose one from this output PLUS other inputs (fundamentals, regime, thesis, momentum-check), and CLAUDE.md forbids using stops as the *primary* cause.

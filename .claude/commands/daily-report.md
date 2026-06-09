@@ -67,12 +67,12 @@ If you find yourself writing "stop triggered → REDUCE" the rule is being viola
    - One-paragraph read on what this means for risk-on vs risk-off today.
 
    ## Portfolio Snapshot
-   **NAV:** $<usd> (or local currency equivalent, FX <date>) · **positions:** <n>
+   **NAV:** <amount in user's home currency, FX <date> if multi-currency> · **positions:** <n>
    **HHI:** <x> (<label>) · **Sharpe (2y):** <x> · **Max DD:** <x>%
    _(risk-metrics, sector-allocation — <YYYY-MM-DD>)_
 
    ## Per-holding Analysis
-   For EACH holding (no "informational only" cop-outs — analyze every position):
+   For EACH holding (no "informational only" cop-outs — analyze every position regardless of exchange):
    - **<TICKER>** (<Full Name>) — **<STRONG BUY|ADD|KEEP|HOLD|REDUCE|SELL|EXIT>** · weight <x>%
    - One sentence on the thesis as-of today.
    - One sentence on recent price/fundamentals (cite numbers from skill outputs or yfinance cache).
@@ -82,7 +82,7 @@ If you find yourself writing "stop triggered → REDUCE" the rule is being viola
 
    Formatting rules for per-holding entries:
    - Signal token comes FIRST in the header line (before weight), so it's immediately visible on scan.
-   - For very small positions where TRIM is not size-appropriate, write in plain English: "Position below minimum size for TRIM — sized as HOLD instead." Do NOT write parenthetical workbench rule citations.
+   - For very small positions where TRIM is not size-appropriate (threshold defined in `research/user-views.md`), write in plain English: "Position below minimum size for TRIM — sized as HOLD instead." Do NOT write parenthetical workbench rule citations.
    - Omit any workbench-internal parentheticals (rule citations, hook names, skill names) from per-holding prose. Keep the substance, not the machinery.
 
    Why two separate lines: the analyst (LLM) decides the signal from fundamentals + momentum + thesis breaks. The Technical reference is situational awareness, NOT input to the decision. Putting a stop price in "Thesis breaks at:" is the most common drift pattern — keeping the slots separate prevents it. The `enforce_stop_signal_separation.py` Stop hook will warn (and, when promoted to BLOCK mode, block) any REDUCE/SELL/EXIT cited on the same line as Chandelier/ATR/200DMA without a fundamental cause within 2 lines.
@@ -102,21 +102,21 @@ If you find yourself writing "stop triggered → REDUCE" the rule is being viola
    > ⚠ Macro caution — SPY <200DMA. The 150DMA early-movers list is currently WATCH-only; broader BUY signals still emit but should be sized conservatively.
 
    ## Opportunity Bridge
-   **Read available cash first.** Look up `cash_ready_usd` at the top level of `portfolio/positions.json`. If present, use that as the cash base for sizing. If absent, fall back to "$40,000" and call this out explicitly: *"Cash ready not set — using $40,000 default. Set it in the Portfolio tab to size proposals against your real cash."*
+   **Read available cash first.** Look up `cash_ready_usd` at the top level of `portfolio/positions.json`. If present, use that as the cash base for sizing (convert to the user's home currency via `currency-conversion` if needed). If absent, fall back to "$40,000" and call this out explicitly: *"Cash ready not set — using $40,000 default. Set it in the Portfolio tab to size proposals against your real cash."*
 
    **Read `research/daily/<today>/opportunities.json` and branch on `_status`:**
 
    - **`_status == "done"`** (Phase 2 complete — full 3-agent debate per ticker)
      - Label the section: *"Opportunities — Phase 2 deep analysis (bull-officer + risk-officer + portfolio-manager debate complete per ticker)."*
-     - Name 2-3 ripe tickers (across lists 1/2/3) with `BUY` or `STRONG_BUY` signals and clean entry, sized against actual cash. Per-ticker sizing capped at `max_invest_ils` from the scanner output.
+     - Name 2-3 ripe tickers (across lists 1/2/3) with `BUY` or `STRONG_BUY` signals and clean entry, sized against actual cash. Per-ticker sizing capped at `max_invest_usd` from the scanner output.
 
    - **`_status == "done:phase1_only"`** (Phase 1 only — fast screener + one-line bull/risk per ticker)
-     - Label the section: *"Opportunities — Phase 1 screening (one-line bull / risk per ticker via fast LLM prompt; full 3-agent debate not run)."*
-     - Phase 1 already includes per-candidate `signal`, `max_invest_ils`, `bull_thesis`, `bear_threshold`. Sizing IS allowed, but the prose must clearly state the analysis depth so the user can decide whether to act now or wait for Phase 2.
-     - Name 2-3 ripe tickers with `BUY` signals; for each, quote the `bull_thesis` and `bear_threshold` verbatim from the JSON.
+     - Label the section: *"Opportunities — Phase 1 screening (one-line bull / risk per ticker via fast LLM prompt; full 3-agent debate not run). To get manager-level vetting before deploying, run: `echo '{\"cash_ils\": <X>, \"date\": \"<TODAY>\", \"phase1_only\": false}' | python3 .claude/skills/opportunity-scanner/scripts/scan.py` (~$30-50, ~25 min)."*
+     - Phase 1 already includes per-candidate `signal`, `max_invest_ils`, `bull_thesis`, `bear_threshold`. Sizing IS allowed (the scanner caps per-ticker at `cash_ils/5` and total at `cash_ils`), but the prose must clearly state the analysis depth so the user can decide whether to act now or wait for Phase 2.
+     - Name 2-3 ripe tickers with `BUY` signals; for each, quote the `bull_thesis` and `bear_threshold` verbatim from the JSON (these are the LLM's one-liners, not your editorial).
 
    - **`_status` starts with `"phase1_failed:"`** (one or more lists failed)
-     - Write: `> Opportunity scanner Phase 1 failed for lists: <names>. Proposing deploys only from existing holdings until the scanner is re-run.`
+     - Write: `> Opportunity scanner Phase 1 failed for lists: <names>. See research/daily/<TODAY>/scan-debug.log. Proposing deploys only from existing holdings until the scanner is re-run.`
      - Skip the new-name sizing; proceed with existing-holdings ADD candidates only.
 
    - **`_status == "running"`** (in progress, partial file written)
@@ -196,6 +196,7 @@ If you find yourself writing "stop triggered → REDUCE" the rule is being viola
 - All daily-report quality rules from CLAUDE.md apply (macro section, all holdings analyzed, "Thesis breaks at" for every holding, opportunity bridge, full signal vocabulary, Trend & Stops Reference at the bottom, early-movers section).
 - **Stops are informational only.** Per-holding signals (REDUCE/SELL/EXIT) must NOT be derived from `trader_status: below`, `investor_status: below` on a single stock, or any `trend_flags` alone. Re-justify any negative signal from fundamentals or remove it.
 - **No quota on negative signals.** The honesty floor is per-holding critical thinking (bear case + thesis-break line), not a count of REDUCEs.
+- Show monetary figures in the user's home currency as defined in `research/user-views.md`. If multi-currency portfolio, show both with FX date.
 - Every numeric claim cites a skill output, the yfinance cache, or a primary-source URL with date.
 - No bull/bear/manager subagent calls — this is the broad-review flow, not the specific-decision flow.
 - If yfinance or any skill returns stale data (>24h), flag it explicitly in the report; do not paper over with plausible numbers.
@@ -215,11 +216,11 @@ Walk this checklist mentally before invoking `Write` on the report file. Every b
     [ ] "Thesis breaks at:" line with a FUNDAMENTAL metric threshold (revenue/guide/margin/growth/competitive/regulatory)
     [ ] "Technical reference:" line with stop/DMA/RSI level
     [ ] no $-only value in "Thesis breaks at:" (e.g., "Thesis breaks at: $13.80" alone is INVALID — must be metric-anchored)
-[ ] No REDUCE/SELL/EXIT signal on the same line as Chandelier/ATR/200DMA without a fundamental cause within 2 lines above
+[ ] No REDUCE/SELL/EXIT signal on the same line as Chandelier/ATR/200DMA without a fundamental cause within 2 lines above (this is what enforce_stop_signal_separation.py enforces)
 [ ] If signals are all KEEP/HOLD/ADD, explicit "No negative signals warranted today — here's what I looked at and dismissed: ..." paragraph is present as the FINAL Ripe Decisions item (honesty floor, not a quota — must be in Ripe Decisions, NOT inside Per-holding Analysis)
 [ ] Early Movers section present (header text matches macro gate: open → "150DMA Setup" with BUY; closed → "WATCH ONLY (macro gate)" with WATCH (macro))
 [ ] If macro gate is closed, caution badge present at top of every BUY surface in the report
-[ ] Opportunity Bridge: cash_ready_usd looked up from positions.json (or default disclosure); opportunities.json read AND its `_status` value explicitly checked; section labeled with the analysis depth
+[ ] Opportunity Bridge: cash_ready_usd looked up from positions.json (or default disclosure); opportunities.json read AND its `_status` value explicitly checked; section labeled with the analysis depth ("Phase 2 deep analysis" / "Phase 1 screening" / one of the fallback messages); sizing tied to actual cash; per-ticker sizing ≤ max_invest_ils from the scanner
 [ ] Earnings on Deck present (or explicit "no earnings within 14 days")
 [ ] Ripe Decisions: 2-3 concrete actions citing per-holding signals
 [ ] Trend & Stops Reference block is at the BOTTOM of the report (after Ripe Decisions), explicitly labeled informational
@@ -234,16 +235,24 @@ After writing the report, run these in a single message (parallel):
 ```bash
 test -s "research/daily/$(date +%Y-%m-%d)/report.md" && echo "report written" || echo "ERROR: report.md missing or empty"
 
+# Backstop the firewall hook — any line that names a REDUCE/SELL/EXIT signal AND
+# cites the stop/Chandelier/200DMA as its cause without a fundamental cause nearby
+# is a bug. The enforce_stop_signal_separation.py hook is the canonical enforcer;
+# this grep surfaces obvious cases for human review.
 grep -nE '(REDUCE|SELL|EXIT).*(stop|chandelier|trigger|200DMA|200dma|150DMA|150dma)' "research/daily/$(date +%Y-%m-%d)/report.md" || echo "no stop-derived negatives — good"
 
+# Confirm Trend & Stops Reference comes AFTER Ripe Decisions (i.e., bottom-of-report,
+# not mid-analysis). The structural check is robust to report length.
+# (`|| true` swallows grep exit 1 under pipefail when section is missing.)
 REPORT_PATH="research/daily/$(date +%Y-%m-%d)/report.md"
 ripe_line=$(grep -n '^## Ripe Decisions' "$REPORT_PATH" 2>/dev/null | head -1 | cut -d: -f1 || true)
 trend_line=$(grep -n '^## Trend & Stops Reference' "$REPORT_PATH" 2>/dev/null | head -1 | cut -d: -f1 || true)
 if [ -z "$trend_line" ]; then echo "ERROR: Trend & Stops Reference section missing"
 elif [ -z "$ripe_line" ]; then echo "ERROR: Ripe Decisions section missing"
-elif [ "$trend_line" -lt "$ripe_line" ]; then echo "ERROR: Trend & Stops Reference appears BEFORE Ripe Decisions — must come AFTER"
-else echo "Trend & Stops Reference correctly positioned — good"; fi
+elif [ "$trend_line" -lt "$ripe_line" ]; then echo "ERROR: Trend & Stops Reference at line $trend_line appears BEFORE Ripe Decisions at line $ripe_line — must come AFTER the main analysis"
+else echo "Trend & Stops Reference correctly positioned after Ripe Decisions (L$trend_line > L$ripe_line) — good"; fi
 
+# Confirm every per-holding entry has both "Thesis breaks at:" and "Technical reference:".
 held=$(python3 -c "import json; d=json.load(open('portfolio/positions.json')); print(len(d if isinstance(d, list) else (d.get('positions') or d.get('holdings') or [])))")
 breaks=$(grep -c '^- \*\*Thesis breaks at:' "$REPORT_PATH" 2>/dev/null || echo 0)
 techrefs=$(grep -c '^- \*\*Technical reference:' "$REPORT_PATH" 2>/dev/null || echo 0)

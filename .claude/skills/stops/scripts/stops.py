@@ -158,8 +158,6 @@ def _process_one(pos: dict) -> dict:
     sym = pos.get("symbol", "?")
     yf_sym = pos.get("yf_symbol") or sym
     asset_type = _classify_asset(pos)
-    # Infer currency: .TA suffix = ILS (TASE), everything else USD.
-    # Configurable via pos["currency"] if your broker export carries it.
     currency = pos.get("currency") or ("ILS" if yf_sym.endswith(".TA") else "USD")
 
     df = pdata.fetch_history(yf_sym, period="2y")

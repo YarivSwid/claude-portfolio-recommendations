@@ -1,6 +1,15 @@
 # User Views — Context, NOT Input to Decisions
 
-> **Setup:** Copy this file to `research/user-views.md` and fill in the bracketed sections. The agents read `user-views.md` (gitignored) — never your example file.
+> **Setup:** Copy this file to `research/user-views.md` and fill in the bracketed sections below.
+> The agents read `research/user-views.md` (gitignored) — never your example file.
+>
+> **Holdings go elsewhere — not in this file:**
+> - Easiest: copy `portfolio/portfolio-template.csv` → fill it in → tell Claude to load it
+> - Broker export: drop `ActivePortfolio.csv.xlsx` at the project root → run `/daily-scan`
+> - Plain English: just tell Claude "I hold X shares of NVDA at $Y cost" — it will build the file
+>
+> **Cash:** Tell Claude "I have $X ready to invest" or add a CASH row to your CSV.
+> This is used by the opportunity scanner to size recommendations.
 
 This file describes the user as a person and the views they've articulated. It is **reference context** for agents, not a set of constraints that should drive recommendations.
 

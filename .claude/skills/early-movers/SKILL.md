@@ -24,7 +24,7 @@ Computes SPY's position vs its own 200DMA the same way `market-regime` does.
 - **SPY > 200DMA** → bucket signals are `BUY`. Default action.
 - **SPY ≤ 200DMA** → bucket signals are downgraded to `WATCH`, with `macro_veto: "SPY <200DMA — broader trend off; revisit when SPY recovers above 200DMA"`. No BUY tokens emitted.
 
-The veto is hard. The discipline: don't buy 150DMA setups when the broader market trend is broken.
+The veto is hard. The user explicitly asked for "don't let me buy them unless the big 200 DMA also says the broader market is safe."
 
 ## Usage
 
@@ -80,4 +80,4 @@ When `gate == "closed"` every candidate's `signal` is `WATCH` and `macro_veto` c
 
 The daily report renders breakouts and pullbacks as two short tables under "Early Movers — 150DMA Setup". If `gate == "closed"`, the section header reads "Early Movers — WATCH ONLY (macro gate)" and every row's signal column shows `WATCH (macro)`.
 
-Per CLAUDE.md rule: the *other* BUY surfaces (opportunity-scanner outputs, broad-review per-holding ADD signals) get a *caution badge* (not a hard veto) when SPY < 200DMA. The hard veto is scoped to early-movers only — that was the explicit design choice.
+Per CLAUDE.md rule: the *other* BUY surfaces (opportunity-scanner outputs, broad-review per-holding ADD signals) get a *caution badge* (not a hard veto) when SPY < 200DMA. The hard veto is scoped to early-movers only — that was the user's explicit choice.

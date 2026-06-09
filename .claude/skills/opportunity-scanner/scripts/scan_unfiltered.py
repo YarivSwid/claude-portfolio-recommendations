@@ -100,7 +100,7 @@ Each item must have these exact keys:
   "name": "Advanced Micro Devices",
   "type": "stock",
   "fit": "exceptional",
-  "max_invest_local": 6000,
+  "max_invest_ils": 18000,
   "signal": "BUY",
   "when_to_buy": "now — or wait for AI-PC catalyst",
   "cooling_trigger": null,
@@ -125,7 +125,7 @@ SORT by signal strength: STRONG_BUY → BUY → WAIT-FOR-CATALYST → WAIT-FOR-C
 """
 
 
-def _build_list1(positions, cash_local, today, exclude, universe_block, portfolio_context):
+def _build_list1(positions, cash_ils, today, exclude, universe_block, portfolio_context):
     held = ", ".join(
         p.get("yf_symbol") or p.get("symbol", "")
         for p in positions if p.get("currency") == "USD"
@@ -145,15 +145,15 @@ Current US holdings: {held}
 
 {universe_block}
 
-TOTAL cash available: {cash_local:,} (local currency). Calibrate sizing accordingly.
-Max per position: {min(cash_local // 5, 10000):,}.
+TOTAL cash available: ₪{cash_ils:,} (~${cash_ils//3:,} USD). Calibrate sizing accordingly.
+Max per position: ₪{min(cash_ils // 5, 25000):,}.
 {excl}
 Use WebSearch to fill bull_thesis with at least one (Source — YYYY-MM-DD) citation and to find concrete numeric bear_threshold metrics. Anchor fundamentals to the universe block above.
 
 {_UNFILTERED_OUTPUT_FORMAT}"""
 
 
-def _build_list2(cash_local, today, exclude, universe_block):
+def _build_list2(cash_ils, today, exclude, universe_block):
     excl = (f"\nCRITICAL: Do NOT include any of these tickers: "
             f"{', '.join(exclude)}. Pick DIFFERENT names.\n") if exclude else ""
     return f"""Today is {today}. You are an investment analyst running the UNFILTERED variant.
@@ -164,15 +164,15 @@ Task: recommend EXACTLY 5 stocks or ETFs for this investor profile that the stan
 
 {universe_block}
 
-TOTAL Cash: {cash_local:,} (local currency). Calibrate to the profile above.
-Max per position: {min(cash_local // 5, 10000):,}.
+TOTAL Cash: ₪{cash_ils:,} (~${cash_ils//3:,} USD). Calibrate to the profile above.
+Max per position: ₪{min(cash_ils // 5, 25000):,}.
 {excl}
 Use WebSearch for citations and numeric bear_threshold metrics.
 
 {_UNFILTERED_OUTPUT_FORMAT}"""
 
 
-def _build_list3(today, cash_local, exclude, universe_block):
+def _build_list3(today, cash_ils, exclude, universe_block):
     excl = (f"\nCRITICAL: Do NOT include any of these tickers: "
             f"{', '.join(exclude)}. Pick DIFFERENT names.\n") if exclude else ""
     return f"""Today is {today}. You are an investment analyst running the UNFILTERED variant.
@@ -181,7 +181,7 @@ Task: recommend EXACTLY 5 stocks or ETFs that are the best market opportunities 
 
 {universe_block}
 
-TOTAL Cash budget: {cash_local:,} (local currency). Max per position: {min(cash_local // 5, 10000):,}.
+TOTAL Cash budget: ₪{cash_ils:,}. Max per position: ₪{min(cash_ils // 5, 25000):,}.
 {excl}
 Use WebSearch for citations and numeric bear_threshold metrics.
 
@@ -197,24 +197,18 @@ def main() -> None:
 
     # Cash resolution mirrors scan.py
     if "cash_ils" in params:
-        cash_local    = int(params["cash_ils"])
+        cash_ils    = int(params["cash_ils"])
         cash_source = "params.cash_ils"
-    elif "cash_local" in params:
-        cash_local    = int(params["cash_local"])
-        cash_source = "params.cash_local"
     else:
         cash_usd = scan._load_cash_ready_usd()
         rate     = scan._fetch_usdils() if cash_usd is not None else None
         if cash_usd is not None and rate:
-            cash_local    = int(cash_usd * rate)
+            cash_ils    = int(cash_usd * rate)
             cash_source = f"positions.cash_ready_usd ({cash_usd:.0f} USD × {rate:.4f})"
-        elif cash_usd is not None:
-            cash_local    = int(cash_usd)
-            cash_source = f"positions.cash_ready_usd ({cash_usd:.0f} USD, no FX)"
         else:
-            cash_local    = 40000
+            cash_ils    = 120000
             cash_source = "default"
-    print(f"[scan_unfiltered] cash_local={cash_local:,} from {cash_source}", file=sys.stderr)
+    print(f"[scan_unfiltered] cash_ils={cash_ils:,} from {cash_source}", file=sys.stderr)
 
     today = params.get("date", dt.date.today().isoformat())
     out_dir      = ROOT / "research" / "daily" / today
@@ -271,7 +265,7 @@ def main() -> None:
 
     output: dict = {
         "date":      today,
-        "cash_local":  cash_local,
+        "cash_ils":  cash_ils,
         "variant":   "unfiltered",
         "list1_portfolio_fit": [],
         "list2_profile_fit":   [],
@@ -297,7 +291,7 @@ def main() -> None:
     # ---------------------------------------------------------------- List 1
     _write_partial("phase1:list1_portfolio_fit")
     output["list1_portfolio_fit"] = scan._run_claude_json(
-        _build_list1(positions, cash_local, today, seen, universe_block, portfolio_context),
+        _build_list1(positions, cash_ils, today, seen, universe_block, portfolio_context),
         "unfiltered:list1_portfolio_fit",
         max_turns=30, retries=1,
     )
@@ -311,7 +305,7 @@ def main() -> None:
     # ---------------------------------------------------------------- List 2
     _write_partial("phase1:list2_profile_fit")
     output["list2_profile_fit"] = scan._run_claude_json(
-        _build_list2(cash_local, today, seen, universe_block),
+        _build_list2(cash_ils, today, seen, universe_block),
         "unfiltered:list2_profile_fit",
         max_turns=30, retries=1,
     )
@@ -325,7 +319,7 @@ def main() -> None:
     # ---------------------------------------------------------------- List 3
     _write_partial("phase1:list3_market_picks")
     output["list3_market_picks"] = scan._run_claude_json(
-        _build_list3(today, cash_local, seen, universe_block),
+        _build_list3(today, cash_ils, seen, universe_block),
         "unfiltered:list3_market_picks",
         max_turns=30, retries=1,
     )
@@ -350,7 +344,7 @@ def main() -> None:
         return (
             SIG.get((it.get("signal") or "").upper(), 0),
             EVID.get((it.get("evidence_strength") or "").lower(), 0),
-            int(it.get("max_invest_local") or it.get("max_invest_ils") or 0),
+            int(it.get("max_invest_ils") or 0),
         )
     for key in ("list1_portfolio_fit", "list2_profile_fit", "list3_market_picks"):
         best: dict[str, dict] = {}

@@ -13,6 +13,18 @@ research/signals/
 research/theses/
 research/regime/
 research/news/
+research/hooks.jsonl
+
+# Backup-by-rename artefacts (defensive: research/daily/ is already ignored,
+# but if someone unsets that we still don't want these in version control).
+# These are produced by skills that rename old outputs on overwrite.
+*.poisoned.json
+*.poisoned.md
+*.prev-*.md
+*.prev-*.json
+*.pre-watch-relabel.json
+scan-debug.log
+scan-stdout*.log
 
 # Broker exports (your actual holdings + transaction history)
 ActivePortfolio.csv.xlsx

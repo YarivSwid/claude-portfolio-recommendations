@@ -1043,7 +1043,15 @@ def run_deep_analysis(symbol: str, positions: list[dict], on_step=None, force: b
         f"BEAR CASE (from risk-officer):\n{risk_out}\n\n"
         f"Synthesize per your spec. Start output with:\n"
         f"SIGNAL: <BUY|HOLD|TRIM|SELL> | CONFIDENCE: <weak|moderate|strong>\n"
-        f"data_as_of: {today}"
+        f"data_as_of: {today}\n\n"
+        f"After your full prose synthesis, output EXACTLY this block "
+        f"(no extra lines before or after the markers):\n\n"
+        f"---ANALYST_SUMMARY---\n"
+        f"ONE_SENTENCE: <one sentence verdict in plain English, 15-25 words>\n"
+        f"ACTION: <concrete next step with ₪ and $ amounts and any tranche logic>\n"
+        f"THESIS_BREAKS_IF: <single observable event that would flip the call>\n"
+        f"NEXT_CATALYST: <date + what to watch, or 'none'>\n"
+        f"---END_SUMMARY---"
     )
 
     try:
@@ -1065,14 +1073,27 @@ def run_deep_analysis(symbol: str, positions: list[dict], on_step=None, force: b
     signal = signal_match.group(1).strip() if signal_match else "—"
     conf   = conf_match.group(1).strip()   if conf_match   else "—"
 
+    def _parse_summary_field(text: str, field: str) -> str:
+        m = re.search(rf"^{field}:\s*(.+)$", text, re.MULTILINE)
+        return m.group(1).strip() if m else "—"
+
+    summary_block_match = re.search(
+        r"---ANALYST_SUMMARY---(.*?)---END_SUMMARY---", manager_out, re.DOTALL
+    )
+    summary_block = summary_block_match.group(1) if summary_block_match else ""
+
     result = {
-        "symbol":     symbol,
-        "date":       today,
-        "bull":       bull_out,
-        "risk":       risk_out,
-        "manager":    manager_out,
-        "signal":     signal,
-        "confidence": conf,
+        "symbol":                 symbol,
+        "date":                   today,
+        "bull":                   bull_out,
+        "risk":                   risk_out,
+        "manager":                manager_out,
+        "signal":                 signal,
+        "confidence":             conf,
+        "summary_one_sentence":   _parse_summary_field(summary_block, "ONE_SENTENCE"),
+        "summary_action":         _parse_summary_field(summary_block, "ACTION"),
+        "summary_thesis_breaks":  _parse_summary_field(summary_block, "THESIS_BREAKS_IF"),
+        "summary_next_catalyst":  _parse_summary_field(summary_block, "NEXT_CATALYST"),
     }
     _save_signal_cache(symbol, result)
     return result
@@ -1414,6 +1435,7 @@ table.holdings tr:hover td {{ background:#161920; }}
   <div class="tab"        onclick="switchTab('filtered')">🔍 Opportunity Unfiltered</div>
   <div class="tab"        onclick="switchTab('report')">📋 Daily Report</div>
 </div>
+<div id="warm-status-bar" style="display:none;align-items:center;padding:5px 18px;font-size:0.82rem;background:#1a1a2e;border-bottom:1px solid #2a2a4a;gap:6px;"></div>
 
 <!-- ================================================================ TAB 1: CHARTS -->
 <div id="tab-charts" class="tab-content active">
@@ -1559,39 +1581,73 @@ table.holdings tr:hover td {{ background:#161920; }}
       </div>
     </div>
 
-    <!-- Signal card -->
+    <!-- Analyst Summary Card -->
     <div id="deep-signal-card" style="display:none;margin-bottom:24px;">
-      <div style="background:#1a1d27;border:1px solid {GRID_COLOR};border-radius:8px;padding:16px 20px;">
-        <div style="font-size:0.75rem;color:#888;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px;">Final Signal</div>
-        <div style="display:flex;gap:24px;align-items:center;flex-wrap:wrap;">
-          <div>
-            <div style="font-size:0.75rem;color:#888;margin-bottom:2px;">Signal</div>
-            <div id="deep-signal-val" style="font-size:1.4rem;font-weight:700;"></div>
-          </div>
-          <div>
-            <div style="font-size:0.75rem;color:#888;margin-bottom:2px;">Confidence</div>
-            <div id="deep-conf-val" style="font-size:1.1rem;font-weight:600;color:{ACCENT_YELLOW}"></div>
-          </div>
-          <div style="flex:1;font-size:0.78rem;color:#666;">Educational analysis, not investment advice.</div>
+      <div style="background:#1a1d27;border:1px solid {GRID_COLOR};border-radius:8px;padding:20px 24px;">
+        <div style="font-size:0.72rem;color:#888;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:14px;">
+          Analyst Summary
         </div>
+        <!-- Row 1: Signal + Confidence -->
+        <div style="display:flex;gap:32px;align-items:flex-start;flex-wrap:wrap;margin-bottom:16px;">
+          <div>
+            <div style="font-size:0.72rem;color:#888;margin-bottom:4px;">Rating</div>
+            <div id="deep-signal-val" style="font-size:1.6rem;font-weight:700;"></div>
+          </div>
+          <div>
+            <div style="font-size:0.72rem;color:#888;margin-bottom:4px;">Confidence</div>
+            <div id="deep-conf-val" style="font-size:1.1rem;font-weight:600;color:{ACCENT_YELLOW};padding-top:4px;"></div>
+          </div>
+          <div style="flex:1;min-width:200px;">
+            <div style="font-size:0.72rem;color:#888;margin-bottom:4px;">In one sentence</div>
+            <div id="deep-summary-sentence" style="font-size:0.95rem;color:#e0e0e0;line-height:1.45;"></div>
+          </div>
+        </div>
+        <!-- Row 2: Action + Thesis breaks + Catalyst -->
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:14px;">
+          <div style="background:#12151f;border:1px solid {GRID_COLOR};border-radius:6px;padding:12px 14px;">
+            <div style="font-size:0.68rem;color:#888;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px;">Action</div>
+            <div id="deep-summary-action" style="font-size:0.88rem;color:#aaffcc;line-height:1.4;"></div>
+          </div>
+          <div style="background:#12151f;border:1px solid {GRID_COLOR};border-radius:6px;padding:12px 14px;">
+            <div style="font-size:0.68rem;color:#888;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px;">Thesis breaks if</div>
+            <div id="deep-summary-thesis" style="font-size:0.88rem;color:#ffccaa;line-height:1.4;"></div>
+          </div>
+          <div style="background:#12151f;border:1px solid {GRID_COLOR};border-radius:6px;padding:12px 14px;">
+            <div style="font-size:0.68rem;color:#888;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px;">Next catalyst</div>
+            <div id="deep-summary-catalyst" style="font-size:0.88rem;color:#aaccff;line-height:1.4;"></div>
+          </div>
+        </div>
+        <div style="font-size:0.75rem;color:#555;">Educational analysis, not investment advice. Decisions are yours.</div>
       </div>
     </div>
 
-    <!-- Three panels -->
+    <!-- Three panels (collapsed by default) -->
     <div id="deep-results" style="display:none;">
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;">
         <div class="deep-panel" id="panel-bull">
-          <div class="deep-panel-title" style="color:{ACCENT_GREEN};">🟢 Bull Officer</div>
-          <div class="deep-panel-body" id="body-bull"></div>
+          <div class="deep-panel-title" style="color:{ACCENT_GREEN};cursor:pointer;user-select:none;display:flex;justify-content:space-between;align-items:center;"
+               onclick="togglePanel('body-bull','icon-bull')">
+            <span>🟢 Bull Officer</span>
+            <span id="icon-bull" style="font-size:0.8rem;color:#666;">▶ Show</span>
+          </div>
+          <div class="deep-panel-body" id="body-bull" style="display:none;"></div>
         </div>
         <div class="deep-panel" id="panel-risk">
-          <div class="deep-panel-title" style="color:{ACCENT_RED};">🔴 Risk Officer</div>
-          <div class="deep-panel-body" id="body-risk"></div>
+          <div class="deep-panel-title" style="color:{ACCENT_RED};cursor:pointer;user-select:none;display:flex;justify-content:space-between;align-items:center;"
+               onclick="togglePanel('body-risk','icon-risk')">
+            <span>🔴 Risk Officer</span>
+            <span id="icon-risk" style="font-size:0.8rem;color:#666;">▶ Show</span>
+          </div>
+          <div class="deep-panel-body" id="body-risk" style="display:none;"></div>
         </div>
       </div>
       <div class="deep-panel">
-        <div class="deep-panel-title" style="color:{ACCENT_BLUE};">🧠 Portfolio Manager Synthesis</div>
-        <div class="deep-panel-body" id="body-manager"></div>
+        <div class="deep-panel-title" style="color:{ACCENT_BLUE};cursor:pointer;user-select:none;display:flex;justify-content:space-between;align-items:center;"
+             onclick="togglePanel('body-manager','icon-manager')">
+          <span>🧠 Portfolio Manager Synthesis</span>
+          <span id="icon-manager" style="font-size:0.8rem;color:#666;">▶ Show</span>
+        </div>
+        <div class="deep-panel-body" id="body-manager" style="display:none;"></div>
       </div>
     </div>
 
@@ -1604,7 +1660,7 @@ table.holdings tr:hover td {{ background:#161920; }}
   <div class="opp-refresh-bar">
     <h2 style="font-size:1.15rem;">💡 Opportunities</h2>
     <span id="opps-date" style="font-size:0.82rem;color:#666;"></span>
-    <button type="button" class="secondary" onclick="loadOpportunities(); return false;" style="font-size:0.82rem;padding:6px 14px;">🔄 Refresh</button>
+    <button type="button" class="secondary" onclick="_oppsCache=null; loadOpportunities(true); return false;" style="font-size:0.82rem;padding:6px 14px;">🔄 Refresh</button>
     <button type="button" class="primary"   onclick="runOpportunityScan(); return false;" id="opps-run-btn" style="font-size:0.82rem;padding:6px 14px;">▶ Run New Scan</button>
     <span id="opps-loading" style="font-size:0.82rem;color:#888;"></span>
   </div>
@@ -1641,7 +1697,7 @@ table.holdings tr:hover td {{ background:#161920; }}
   <div class="opp-refresh-bar">
     <h2 style="font-size:1.15rem;">🔍 Opportunity Unfiltered</h2>
     <span id="unf-date" style="font-size:0.82rem;color:#666;"></span>
-    <button type="button" class="secondary" onclick="loadUnfiltered(); return false;" style="font-size:0.82rem;padding:6px 14px;">🔄 Refresh</button>
+    <button type="button" class="secondary" onclick="_unfCache=null; loadUnfiltered(true); return false;" style="font-size:0.82rem;padding:6px 14px;">🔄 Refresh</button>
     <button type="button" class="primary"   onclick="runUnfilteredScan(); return false;" id="unf-run-btn" style="font-size:0.82rem;padding:6px 14px;">▶ Run No-Filter Scan</button>
     <span id="unf-loading" style="font-size:0.82rem;color:#888;"></span>
   </div>
@@ -2593,7 +2649,14 @@ function renderOppList(containerId, items) {{
   el.innerHTML = items.map(renderOppCard).join('');
 }}
 
-async function loadOpportunities() {{
+let _oppsCache = null;  // cached opportunities data — avoids blank flash on tab switch
+
+async function loadOpportunities(forceRefresh = false) {{
+  // Serve from cache instantly on tab switch if data already loaded and no scan running.
+  if (!forceRefresh && _oppsCache) {{
+    _renderOppsFromCache();
+    return;
+  }}
   document.getElementById('opps-loading').textContent = '⏳ Loading…';
   // First check whether a scan is currently in flight — if so, switch into
   // poll mode (lock the button, render per-list state) instead of painting
@@ -2625,15 +2688,21 @@ async function loadOpportunities() {{
       document.getElementById('opps-loading').textContent = 'Error: ' + data.error;
       return;
     }}
-    document.getElementById('opps-date').textContent = data.date ? 'Last scan: ' + data.date : '';
-    renderUniverseQuality(data._universe_quality);
-    renderOppList('opps-list1', data.list1_portfolio_fit);
-    renderOppList('opps-list2', data.list2_profile_fit);
-    renderOppList('opps-list3', data.list3_market_picks);
-    document.getElementById('opps-loading').textContent = '';
+    _oppsCache = data;
+    _renderOppsFromCache();
   }} catch(e) {{
     document.getElementById('opps-loading').textContent = 'No scan data yet — click ▶ Run New Scan.';
   }}
+}}
+
+function _renderOppsFromCache() {{
+  const data = _oppsCache;
+  document.getElementById('opps-date').textContent = data.date ? 'Last scan: ' + data.date : '';
+  renderUniverseQuality(data._universe_quality);
+  renderOppList('opps-list1', data.list1_portfolio_fit);
+  renderOppList('opps-list2', data.list2_profile_fit);
+  renderOppList('opps-list3', data.list3_market_picks);
+  document.getElementById('opps-loading').textContent = '';
 }}
 
 let _oppsPollTimer = null;
@@ -2688,10 +2757,43 @@ function _renderListSlot(listKey, partialData, currentlyRunning) {{
 }}
 
 async function runOpportunityScan() {{
+  _oppsCache = null;  // invalidate cache so next tab visit re-fetches
   const btn = document.getElementById('opps-run-btn');
-  // Lock the button for the entire scan. Re-enable only on a terminal status.
   btn.disabled = true;
   btn.dataset.origLabel = btn.dataset.origLabel || btn.textContent;
+
+  // Auto-warm universe if not already warmed today — guarantees screener
+  // scores the full 533-ticker universe, not just whatever is cached.
+  const today = new Date().toISOString().slice(0, 10);
+  try {{
+    const ws = await fetch(`${{SERVER}}/warm-universe/status`);
+    const wd = await ws.json();
+    const alreadyWarm = !wd.running && wd.date === today && wd.event === 'complete';
+    if (!alreadyWarm) {{
+      btn.textContent = '⏳ Warming universe…';
+      document.getElementById('opps-loading').textContent = '⏳ Pre-warming universe (one-time, ~3 min)…';
+      // Start warm
+      await fetch(`${{SERVER}}/warm-universe/run`, {{method:'POST'}});
+      // Poll until warm completes
+      await new Promise(resolve => {{
+        const t = setInterval(async () => {{
+          try {{
+            const r = await fetch(`${{SERVER}}/warm-universe/status`);
+            const d = await r.json();
+            if (!d.running) {{ clearInterval(t); resolve(); }}
+            else {{
+              const ok = (d.total_ok||0) + (d.total_cached||0);
+              document.getElementById('opps-loading').textContent =
+                `⏳ Warming universe… ${{ok}} tickers cached so far`;
+            }}
+          }} catch(e) {{ clearInterval(t); resolve(); }}
+        }}, 4000);
+      }});
+      checkWarmStatus();  // refresh the warm bar
+    }}
+  }} catch(e) {{ /* warm check failed — proceed anyway */ }}
+
+  // Lock the button for the entire scan. Re-enable only on a terminal status.
   btn.textContent = '⏳ Running…';
   document.getElementById('opps-loading').textContent = '⏳ Starting scan…';
   // Show "Queued" placeholders immediately so the click has visible feedback
@@ -2788,7 +2890,14 @@ function _startOppsPoll(btn) {{
 }}
 
 // ================================================================ FILTERED TAB (unfiltered scan)
-async function loadUnfiltered() {{
+let _unfCache = null;  // cached unfiltered data — avoids blank flash on tab switch
+
+async function loadUnfiltered(forceRefresh = false) {{
+  // Serve from cache instantly on tab switch if data already loaded and no scan running.
+  if (!forceRefresh && _unfCache) {{
+    _renderUnfilteredFromCache();
+    return;
+  }}
   document.getElementById('unf-loading').textContent = '⏳ Loading…';
   try {{
     const sr = await fetch(`${{SERVER}}/opportunities-unfiltered/status`);
@@ -2820,15 +2929,21 @@ async function loadUnfiltered() {{
       }});
       return;
     }}
-    document.getElementById('unf-date').textContent = data.date ? 'Last scan: ' + data.date : '';
-    _renderUnfilteredUniverse(data._universe_quality, data._excluded_from_main);
-    renderOppList('unf-list1', data.list1_portfolio_fit);
-    renderOppList('unf-list2', data.list2_profile_fit);
-    renderOppList('unf-list3', data.list3_market_picks);
-    document.getElementById('unf-loading').textContent = '';
+    _unfCache = data;
+    _renderUnfilteredFromCache();
   }} catch(e) {{
     document.getElementById('unf-loading').textContent = 'No scan data yet — click ▶ Run No-Filter Scan.';
   }}
+}}
+
+function _renderUnfilteredFromCache() {{
+  const data = _unfCache;
+  document.getElementById('unf-date').textContent = data.date ? 'Last scan: ' + data.date : '';
+  _renderUnfilteredUniverse(data._universe_quality, data._excluded_from_main);
+  renderOppList('unf-list1', data.list1_portfolio_fit);
+  renderOppList('unf-list2', data.list2_profile_fit);
+  renderOppList('unf-list3', data.list3_market_picks);
+  document.getElementById('unf-loading').textContent = '';
 }}
 
 function _renderUnfilteredUniverse(uq, excluded) {{
@@ -2850,6 +2965,7 @@ function _renderUnfilteredUniverse(uq, excluded) {{
 }}
 
 async function runUnfilteredScan() {{
+  _unfCache = null;  // invalidate cache so next tab visit re-fetches
   const btn = document.getElementById('unf-run-btn');
   btn.disabled = true;
   btn.dataset.origLabel = btn.dataset.origLabel || btn.textContent;
@@ -2928,17 +3044,49 @@ function _startUnfilteredPoll(btn) {{
   }}, 15000);
 }}
 
+function togglePanel(bodyId, iconId) {{
+  const body = document.getElementById(bodyId);
+  const icon = document.getElementById(iconId);
+  if (!body) return;
+  const isHidden = body.style.display === 'none';
+  body.style.display = isHidden ? 'block' : 'none';
+  if (icon) icon.textContent = isHidden ? '▼ Hide' : '▶ Show';
+}}
+
 function _renderDeepResult(data) {{
   setStep('bull', 'done'); setStep('risk', 'done'); setStep('manager', 'done');
+
+  // Populate summary card
   const sigEl  = document.getElementById('deep-signal-val');
   const confEl = document.getElementById('deep-conf-val');
   sigEl.textContent  = data.signal || '—';
   sigEl.style.color  = signalColor(data.signal);
   confEl.textContent = data.confidence || '—';
+
+  const setText = (id, val) => {{
+    const el = document.getElementById(id);
+    if (el) el.textContent = val || '—';
+  }};
+  setText('deep-summary-sentence',  data.summary_one_sentence);
+  setText('deep-summary-action',    data.summary_action);
+  setText('deep-summary-thesis',    data.summary_thesis_breaks);
+  setText('deep-summary-catalyst',  data.summary_next_catalyst);
+
   document.getElementById('deep-signal-card').style.display = 'block';
+
+  // Populate detail panels (collapsed — user expands)
   document.getElementById('body-bull').textContent    = data.bull    || '(no output)';
   document.getElementById('body-risk').textContent    = data.risk    || '(no output)';
   document.getElementById('body-manager').textContent = data.manager || '(no output)';
+  // Reset collapse state so re-runs start collapsed
+  ['body-bull','body-risk','body-manager'].forEach(id => {{
+    const el = document.getElementById(id);
+    if (el) el.style.display = 'none';
+  }});
+  [['icon-bull','▶ Show'],['icon-risk','▶ Show'],['icon-manager','▶ Show']].forEach(([id, label]) => {{
+    const el = document.getElementById(id);
+    if (el) el.textContent = label;
+  }});
   document.getElementById('deep-results').style.display = 'block';
   // Show cached_at timestamp + force-refresh link if from cache
   let meta = document.getElementById('deep-cache-meta');
@@ -3017,9 +3165,79 @@ async function runDeepAnalysis(force=false) {{
   document.getElementById('deep-loading').textContent = '';
 }}
 
+// ================================================================ UNIVERSE WARM
+function _setScanButtonsDisabled(disabled, reason) {{
+  // Disable/enable both scan buttons and show reason in their label.
+  const btns = [
+    {{ id: 'opps-run-btn',  label: '▶ Run New Scan' }},
+    {{ id: 'unf-run-btn',   label: '▶ Run No-Filter Scan' }},
+  ];
+  btns.forEach(item => {{
+    const el = document.getElementById(item.id);
+    if (!el) return;
+    if (disabled) {{
+      el.disabled = true;
+      el.dataset.origLabel = el.dataset.origLabel || el.textContent;
+      el.textContent = reason || '⏳ Warming…';
+    }} else {{
+      el.disabled = false;
+      el.textContent = el.dataset.origLabel || item.label;
+    }}
+  }});
+}}
+
+async function checkWarmStatus() {{
+  try {{
+    const res  = await fetch(`${{SERVER}}/warm-universe/status`);
+    const data = await res.json();
+    const bar  = document.getElementById('warm-status-bar');
+    if (!bar) return;
+    const today = new Date().toISOString().slice(0, 10);
+    if (data.running) {{
+      bar.style.display = 'flex';
+      bar.innerHTML = `<span style="color:#f0a500">⏳ Universe pre-warm running… S&P 500 + ETFs being cached.</span>`;
+      _setScanButtonsDisabled(true, '⏳ Warming universe…');
+    }} else if (data.status === 'never_run' || data.date !== today) {{
+      bar.style.display = 'flex';
+      bar.innerHTML = `<span style="color:#888">⚠ Universe not warmed today — screener may only see cached tickers. </span>
+        <button onclick="runWarmUniverse()" style="margin-left:8px;font-size:0.78rem;padding:3px 10px;" class="secondary">▶ Warm Now (~3 min, free)</button>`;
+      _setScanButtonsDisabled(false);
+    }} else {{
+      const ok = (data.total_ok || 0) + (data.total_cached || 0);
+      bar.style.display = 'flex';
+      bar.innerHTML = `<span style="color:#4caf50">✓ Universe warmed today — ${{ok}} tickers cached (S&P 500 + ETFs + watchlist).</span>
+        <button onclick="runWarmUniverse()" style="margin-left:8px;font-size:0.78rem;padding:3px 10px;" class="secondary">↺ Re-warm</button>`;
+      _setScanButtonsDisabled(false);
+    }}
+  }} catch(e) {{ /* server not ready yet */ }}
+}}
+
+async function runWarmUniverse() {{
+  const bar = document.getElementById('warm-status-bar');
+  if (bar) bar.innerHTML = `<span style="color:#f0a500">⏳ Starting universe pre-warm…</span>`;
+  _setScanButtonsDisabled(true, '⏳ Warming universe…');
+  try {{
+    await fetch(`${{SERVER}}/warm-universe/run`, {{method:'POST'}});
+    // Poll until done
+    const poll = setInterval(async () => {{
+      const r = await fetch(`${{SERVER}}/warm-universe/status`);
+      const d = await r.json();
+      if (!d.running) {{
+        clearInterval(poll);
+        _setScanButtonsDisabled(false);
+        checkWarmStatus();
+      }}
+    }}, 5000);
+  }} catch(e) {{
+    if (bar) bar.innerHTML = `<span style="color:#f44">Failed to start warm: ${{e.message}}</span>`;
+    _setScanButtonsDisabled(false);
+  }}
+}}
+
 // Check cache whenever ticker input changes (debounced)
 let _deepCacheTimer = null;
 document.addEventListener('DOMContentLoaded', () => {{
+  checkWarmStatus();  // check universe warm status on every page load
   const inp = document.getElementById('deep-ticker');
   if (inp) {{
     inp.addEventListener('input', () => {{
@@ -3054,6 +3272,7 @@ class _Handler(BaseHTTPRequestHandler):
     _unfiltered_running: bool = False
     _unfiltered_started_at: str = ""
     _unfiltered_last_error: str = ""
+    _warm_running: bool = False
 
     def log_message(self, fmt, *args):
         pass
@@ -3351,6 +3570,20 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json({"error": "no partial data yet"})
             return
 
+        if parsed.path == "/warm-universe/status":
+            status_file = ROOT / ".cache" / "warm_universe_status.json"
+            today = dt.date.today().isoformat()
+            if status_file.exists():
+                try:
+                    data = json.loads(status_file.read_text())
+                    data["running"] = _Handler._warm_running
+                    self._send_json(data)
+                except Exception:
+                    self._send_json({"date": today, "running": _Handler._warm_running, "error": "unreadable"})
+            else:
+                self._send_json({"date": today, "running": _Handler._warm_running, "status": "never_run"})
+            return
+
         self.send_response(404)
         self.end_headers()
 
@@ -3403,6 +3636,25 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json({"answer": answer})
             except Exception as e:
                 self._send_json({"error": str(e)}, 500)
+            return
+
+        if parsed.path == "/warm-universe/run":
+            if _Handler._warm_running:
+                self._send_json({"status": "already_running"})
+                return
+            _Handler._warm_running = True
+            def _do_warm():
+                try:
+                    import subprocess as _sp
+                    _sp.run(
+                        ["python3", str(ROOT / "scripts" / "warm_universe.py")],
+                        cwd=str(ROOT),
+                    )
+                finally:
+                    _Handler._warm_running = False
+            import threading as _threading
+            _threading.Thread(target=_do_warm, daemon=True).start()
+            self._send_json({"status": "started"})
             return
 
         if parsed.path == "/opportunities/run":

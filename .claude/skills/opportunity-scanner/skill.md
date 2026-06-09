@@ -57,8 +57,8 @@ echo '{"cash_ils": 120000, "date": "2026-04-21"}' | python3 .claude/skills/oppor
 echo '{"cash_ils": 120000, "date": "2026-04-21", "phase1_only": false}' | python3 .claude/skills/opportunity-scanner/scripts/scan.py
 ```
 
-## Deduplication
-Lists run sequentially: List 1 first, then List 2 (excluding List 1 tickers), then List 3 (excluding Lists 1+2 tickers). This ensures 30 unique tickers across 30 slots.
+## Cross-list overlap
+Lists run sequentially: List 1 first, then List 2 (told to *prefer* tickers not on List 1), then List 3 (told to *prefer* tickers not on Lists 1+2). The "exclude" hint is a *preference*, not a hard filter — if a name is genuinely the right pick from three independent framings (portfolio-fit, profile-fit, market), it can and should appear on more than one list. The scanner flags overlaps via `_dedup_warning` and `_duplicate_of` for visibility, but does NOT remove them. A ticker on all three lists is a high-conviction signal, not a bug.
 
 ## Signal variety
 Not everything is BUY. Signals include: BUY / WATCH / HOLD / AVOID.

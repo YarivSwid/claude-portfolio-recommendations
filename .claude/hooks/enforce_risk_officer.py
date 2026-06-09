@@ -26,23 +26,24 @@ import re
 import sys
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from lib.signal_patterns import SIGNAL_VALUE_RE as SIGNAL_MARKER_RE  # noqa: E402
+from _log import emit, emit_error  # noqa: E402
+
+HOOK_NAME = "enforce_risk_officer"
+
 # A real trade recommendation requires ALL THREE simultaneously:
-#   1. An explicit recommendation marker with a signal token
-#      (e.g., "**Signal: BUY**", "Recommendation: SELL", "Action: TRIM")
-#   2. A Confidence: 0.X field (per CLAUDE.md rule #2)
-#   3. A data_as_of: stamp (per CLAUDE.md rule #2)
+#   1. An explicit recommendation marker with a signal token via the canonical
+#      SIGNAL_VALUE_RE (signal/recommendation/action/verdict = BUY/STRONG BUY/
+#      KEEP/HOLD/ADD/REDUCE/TRIM/CUT/SELL/EXIT/AVOID/WATCH/...)
+#   2. A Confidence: <weak|moderate|strong|severe|0.X> field
+#   3. A data_as_of: stamp
 # Meta-discussion may cite skill output with Confidence + data_as_of but
-# will NOT also carry an explicit signal marker. This triple-check avoids
+# will NOT also carry an explicit signal-value marker. The triple-check avoids
 # false positives from configuration/help discussions.
-SIGNAL_MARKER_RE = re.compile(
-    r"(?:\*{0,2}\s*(?:signal|recommendation|action|verdict|trade\s*signal)\s*\*{0,2}\s*[:=]\s*\*{0,2}\s*"
-    r"(?:BUY|SELL|HOLD|TRIM|CUT|EXIT|ADD)\b"
-    r"|"
-    # Also catch table-cell style: "| **BUY** |" or "| Signal | **BUY** |"
-    r"\|\s*\*{2}(?:BUY|SELL|HOLD|TRIM|CUT|EXIT|ADD)\*{2}\s*\|"
-    r")",
-    re.IGNORECASE,
-)
 CONFIDENCE_RE = re.compile(r"\b[Cc]onfidence\s*[:=]\s*\*{0,2}\s*(weak|moderate|strong|severe|0?\.\d+)", re.MULTILINE)
 DATA_AS_OF_RE = re.compile(r"\bdata_as_of\s*[:=]", re.IGNORECASE | re.MULTILINE)
 
@@ -50,11 +51,13 @@ DATA_AS_OF_RE = re.compile(r"\bdata_as_of\s*[:=]", re.IGNORECASE | re.MULTILINE)
 def main():
     try:
         payload = json.load(sys.stdin)
-    except Exception:
+    except Exception as e:
+        emit(HOOK_NAME, "skip", reason=f"stdin parse failed: {e}")
         sys.exit(0)
 
     transcript_path = payload.get("transcript_path")
     if not transcript_path or not Path(transcript_path).exists():
+        emit(HOOK_NAME, "skip", reason="no transcript path")
         sys.exit(0)
 
     # Load all transcript entries
@@ -138,17 +141,16 @@ def main():
         if not has_portfolio_manager:
             missing.append("portfolio-manager (synthesis)")
         if missing:
-            out = {
-                "decision": "block",
-                "reason": (
-                    "Guardrail: this turn contains a BUY/SELL/HOLD recommendation "
-                    f"but the following required subagent(s) were NOT invoked THIS TURN: "
-                    f"{', '.join(missing)}. Invoke each missing officer to produce "
-                    "their respective case, then re-issue the recommendation with "
-                    "confidence + data_as_of + sources. Both officers should be "
-                    "called in parallel when the signal is first formed."
-                ),
-            }
+            reason = (
+                "Guardrail: this turn contains a BUY/SELL/HOLD recommendation "
+                f"but the following required subagent(s) were NOT invoked THIS TURN: "
+                f"{', '.join(missing)}. Invoke each missing officer to produce "
+                "their respective case, then re-issue the recommendation with "
+                "confidence + data_as_of + sources. Both officers should be "
+                "called in parallel when the signal is first formed."
+            )
+            out = {"decision": "block", "reason": reason}
+            emit(HOOK_NAME, "block", reason=f"missing subagents: {', '.join(missing)}")
             print(json.dumps(out))
             sys.exit(0)
 
@@ -156,21 +158,27 @@ def main():
         # If both officers ran but neither WebFetch nor WebSearch was called this turn,
         # the theses were written from model memory — block it.
         if has_bull_officer and has_risk_officer and not has_web_fetch and not has_web_search:
-            out = {
-                "decision": "block",
-                "reason": (
-                    "Guardrail: bull-officer and risk-officer both ran this turn but "
-                    "neither WebFetch nor WebSearch was called. Per agent specs, every "
-                    "thesis requires ≥1 primary source fetch (earnings release, 10-Q, IR, "
-                    "credible press). If real sources were unavailable, the officers must "
-                    "return INSUFFICIENT DATA rather than writing from model memory. "
-                    "Re-run with actual primary-source research or return INSUFFICIENT DATA."
-                ),
-            }
+            reason = (
+                "Guardrail: bull-officer and risk-officer both ran this turn but "
+                "neither WebFetch nor WebSearch was called. Per agent specs, every "
+                "thesis requires ≥1 primary source fetch (earnings release, 10-Q, IR, "
+                "credible press). If real sources were unavailable, the officers must "
+                "return INSUFFICIENT DATA rather than writing from model memory. "
+                "Re-run with actual primary-source research or return INSUFFICIENT DATA."
+            )
+            out = {"decision": "block", "reason": reason}
+            emit(HOOK_NAME, "block", reason="no primary-source fetch")
             print(json.dumps(out))
             sys.exit(0)
 
+    emit(HOOK_NAME, "pass")
     sys.exit(0)
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except BaseException as _e:
+        emit_error(HOOK_NAME, _e)
+        sys.exit(0)
